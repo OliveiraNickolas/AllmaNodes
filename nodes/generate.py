@@ -27,6 +27,15 @@ class AllmaGenerate:
             "required": {
                 "connectivity": ("ALLMA_CONNECTIVITY",),
                 "preset": (_preset_choices(), {}),
+                "use_image_metadata": (
+                    "BOOLEAN",
+                    {
+                        "default": True,
+                        "tooltip": "When ON and image_N_meta is connected, the METADATA STRING "
+                        "from AllmaLoadImage is added to the system prompt so the model can "
+                        "reason over the original prompt/model/LoRAs behind the image.",
+                    },
+                ),
                 "system_prompt": ("STRING", {
                     "multiline": True,
                     "default": "You are a helpful assistant.",
@@ -39,8 +48,11 @@ class AllmaGenerate:
             "optional": {
                 "model": ("MODEL",),
                 "image_1": ("IMAGE",),
+                "image_1_meta": ("STRING", {"forceInput": True}),
                 "image_2": ("IMAGE",),
+                "image_2_meta": ("STRING", {"forceInput": True}),
                 "image_3": ("IMAGE",),
+                "image_3_meta": ("STRING", {"forceInput": True}),
                 "audio": ("AUDIO",),
             },
         }
@@ -58,12 +70,16 @@ class AllmaGenerate:
         self,
         connectivity,
         preset,
+        use_image_metadata,
         system_prompt,
         user_prompt,
         model=None,
         image_1=None,
+        image_1_meta=None,
         image_2=None,
+        image_2_meta=None,
         image_3=None,
+        image_3_meta=None,
         audio=None,
     ):
         if not isinstance(connectivity, dict):
@@ -84,6 +100,22 @@ class AllmaGenerate:
             block = format_loras_for_prompt(loras)
             effective_system = (effective_system + "\n\n" + block).strip()
             print(f"{LOG} sniffed {len(loras)} LoRA(s): {[l['name'] for l in loras]}")
+
+        if use_image_metadata:
+            meta_blocks: list[str] = []
+            for idx, meta in enumerate((image_1_meta, image_2_meta, image_3_meta), start=1):
+                if meta and isinstance(meta, str) and meta.strip():
+                    text = meta.strip()
+                    if not text.lower().startswith("image metadata"):
+                        text = f"Image {idx} metadata:\n" + text
+                    else:
+                        text = text.replace("Image metadata", f"Image {idx} metadata", 1)
+                    meta_blocks.append(text)
+            if meta_blocks:
+                effective_system = (
+                    effective_system + "\n\n" + "\n\n".join(meta_blocks)
+                ).strip()
+                print(f"{LOG} attached metadata for {len(meta_blocks)} image(s)")
 
         image_urls: list[str] = []
         for tag, img in (("image_1", image_1), ("image_2", image_2), ("image_3", image_3)):

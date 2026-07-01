@@ -7,16 +7,19 @@ Plus preset CRUD via HTTP + JS extension for the preset buttons.
 """
 from .nodes.connectivity import AllmaConnectivity
 from .nodes.generate import AllmaGenerate
+from .nodes.load_image import AllmaLoadImage
 from .nodes.preset import register_preset_endpoints
 
 NODE_CLASS_MAPPINGS = {
     "AllmaConnectivity": AllmaConnectivity,
     "AllmaGenerate": AllmaGenerate,
+    "AllmaLoadImage": AllmaLoadImage,
 }
 
 NODE_DISPLAY_NAME_MAPPINGS = {
     "AllmaConnectivity": "Allma Connectivity",
     "AllmaGenerate": "Allma Generate",
+    "AllmaLoadImage": "Allma Load Image",
 }
 
 WEB_DIRECTORY = "./web"
