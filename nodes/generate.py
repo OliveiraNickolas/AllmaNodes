@@ -27,6 +27,14 @@ class AllmaGenerate:
             "required": {
                 "connectivity": ("ALLMA_CONNECTIVITY",),
                 "preset": (_preset_choices(), {}),
+                "system_prompt": ("STRING", {
+                    "multiline": True,
+                    "default": "",
+                }),
+                "user_prompt": ("STRING", {
+                    "multiline": True,
+                    "default": "",
+                }),
                 "use_image_metadata": (
                     "BOOLEAN",
                     {
@@ -36,14 +44,6 @@ class AllmaGenerate:
                         "reason over the original prompt/model/LoRAs behind the image.",
                     },
                 ),
-                "system_prompt": ("STRING", {
-                    "multiline": True,
-                    "default": "You are a helpful assistant.",
-                }),
-                "user_prompt": ("STRING", {
-                    "multiline": True,
-                    "default": "",
-                }),
             },
             "optional": {
                 "model": ("MODEL",),
