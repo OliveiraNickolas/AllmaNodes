@@ -1,0 +1,111 @@
+import { app } from "../../scripts/app.js";
+
+const API = {
+  list: () => fetch("/allma/presets").then((r) => r.json()),
+  load: (name) =>
+    fetch(`/allma/presets/${encodeURIComponent(name)}`).then((r) =>
+      r.ok ? r.json() : null
+    ),
+  save: (name, body) =>
+    fetch("/allma/presets", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ name, ...body }),
+    }).then((r) => r.json()),
+  del: (name) =>
+    fetch(`/allma/presets/${encodeURIComponent(name)}`, { method: "DELETE" }),
+};
+
+function widget(node, name) {
+  return node.widgets?.find((w) => w.name === name);
+}
+
+async function refreshPresetDropdown(node) {
+  try {
+    const { presets } = await API.list();
+    const w = widget(node, "preset");
+    if (!w) return;
+    const values = presets && presets.length ? ["(none)", ...presets] : ["(none)"];
+    w.options.values = values;
+    if (!values.includes(w.value)) w.value = "(none)";
+    node.setDirtyCanvas(true, true);
+  } catch (e) {
+    console.warn("[ComfyUI-Allma] refresh failed", e);
+  }
+}
+
+async function applyPreset(node, name) {
+  if (!name || name === "(none)") return;
+  const data = await API.load(name);
+  if (!data) return;
+  const sp = widget(node, "system_prompt");
+  if (sp && typeof data.system_prompt === "string") {
+    sp.value = data.system_prompt;
+    node.setDirtyCanvas(true, true);
+  }
+}
+
+app.registerExtension({
+  name: "allma.preset_ui",
+  async beforeRegisterNodeDef(nodeType, nodeData) {
+    if (nodeData?.name !== "AllmaGenerate") return;
+
+    const origCreated = nodeType.prototype.onNodeCreated;
+    nodeType.prototype.onNodeCreated = function () {
+      const r = origCreated?.apply(this, arguments);
+
+      const presetW = widget(this, "preset");
+      if (presetW) {
+        const origCb = presetW.callback;
+        presetW.callback = (v) => {
+          origCb?.(v);
+          applyPreset(this, v);
+        };
+      }
+
+      this.addWidget("button", "new preset", null, async () => {
+        const name = prompt("Nome do novo preset:");
+        if (!name) return;
+        const spVal = widget(this, "system_prompt")?.value || "";
+        const res = await API.save(name, { system_prompt: spVal, notes: "" });
+        if (res?.ok) {
+          await refreshPresetDropdown(this);
+          const w = widget(this, "preset");
+          if (w) {
+            w.value = res.name || name;
+            this.setDirtyCanvas(true, true);
+          }
+        }
+      });
+
+      this.addWidget("button", "save current", null, async () => {
+        const w = widget(this, "preset");
+        const name = w?.value;
+        if (!name || name === "(none)") {
+          alert("Selecione um preset primeiro (ou use 'new preset').");
+          return;
+        }
+        const spVal = widget(this, "system_prompt")?.value || "";
+        await API.save(name, { system_prompt: spVal, notes: "" });
+      });
+
+      this.addWidget("button", "reload", null, async () => {
+        const w = widget(this, "preset");
+        await refreshPresetDropdown(this);
+        if (w?.value) await applyPreset(this, w.value);
+      });
+
+      this.addWidget("button", "delete", null, async () => {
+        const w = widget(this, "preset");
+        const name = w?.value;
+        if (!name || name === "(none)") return;
+        if (!confirm(`Deletar preset "${name}"?`)) return;
+        await API.del(name);
+        await refreshPresetDropdown(this);
+      });
+
+      setTimeout(() => refreshPresetDropdown(this), 0);
+      return r;
+    };
+  },
+});

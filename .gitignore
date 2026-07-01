@@ -1,0 +1,11 @@
+__pycache__/
+*.pyc
+*.pyo
+.DS_Store
+.vscode/
+.idea/
+*.swp
+
+presets/*.json
+!presets/.gitkeep
+!presets/_example_*.json
