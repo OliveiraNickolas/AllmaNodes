@@ -44,6 +44,15 @@ class AllmaGenerate:
                         "reason over the original prompt/model/LoRAs behind the image.",
                     },
                 ),
+                "thinking": (
+                    "BOOLEAN",
+                    {
+                        "default": False,
+                        "tooltip": "OFF: model skips the <think> block and returns the answer directly. "
+                        "ON: model reasons first; the reasoning is exposed on the second output "
+                        "('thinking') so it doesn't leak into 'response'.",
+                    },
+                ),
             },
             "optional": {
                 "model": ("MODEL",),
@@ -57,8 +66,8 @@ class AllmaGenerate:
             },
         }
 
-    RETURN_TYPES = ("STRING",)
-    RETURN_NAMES = ("response",)
+    RETURN_TYPES = ("STRING", "STRING")
+    RETURN_NAMES = ("response", "thinking")
     FUNCTION = "generate"
     CATEGORY = "Allma"
 
@@ -70,9 +79,10 @@ class AllmaGenerate:
         self,
         connectivity,
         preset,
-        use_image_metadata,
         system_prompt,
         user_prompt,
+        use_image_metadata,
+        thinking,
         model=None,
         image_1=None,
         image_1_meta=None,
@@ -137,7 +147,7 @@ class AllmaGenerate:
         if content == "" and not effective_system:
             raise RuntimeError("Nothing to send — both prompts are empty and no inputs attached.")
 
-        response = chat_completion(
+        response, thought = chat_completion(
             host=connectivity["host"],
             port=connectivity["port"],
             timeout=connectivity["timeout"],
@@ -149,5 +159,6 @@ class AllmaGenerate:
             top_k=connectivity.get("top_k", 20),
             max_tokens=connectivity.get("max_tokens", 2048),
             seed=connectivity.get("seed", -1),
+            enable_thinking=bool(thinking),
         )
-        return (response,)
+        return (response, thought if thinking else "")

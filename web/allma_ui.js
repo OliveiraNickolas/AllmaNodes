@@ -63,7 +63,7 @@ app.registerExtension({
         };
       }
 
-      this.addWidget("button", "new preset", null, async () => {
+      this.addWidget("button", "➕ new", null, async () => {
         const name = prompt("Nome do novo preset:");
         if (!name) return;
         const spVal = widget(this, "system_prompt")?.value || "";
@@ -78,7 +78,7 @@ app.registerExtension({
         }
       });
 
-      this.addWidget("button", "save current", null, async () => {
+      this.addWidget("button", "💾 save", null, async () => {
         const w = widget(this, "preset");
         const name = w?.value;
         if (!name || name === "(none)") {
@@ -89,13 +89,13 @@ app.registerExtension({
         await API.save(name, { system_prompt: spVal, notes: "" });
       });
 
-      this.addWidget("button", "reload", null, async () => {
+      this.addWidget("button", "🔄 reload", null, async () => {
         const w = widget(this, "preset");
         await refreshPresetDropdown(this);
         if (w?.value) await applyPreset(this, w.value);
       });
 
-      this.addWidget("button", "delete", null, async () => {
+      this.addWidget("button", "🗑️ delete", null, async () => {
         const w = widget(this, "preset");
         const name = w?.value;
         if (!name || name === "(none)") return;

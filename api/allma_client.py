@@ -123,10 +123,16 @@ def chat_completion(
     top_k: int = 20,
     max_tokens: int = 2048,
     seed: int | None = None,
+    enable_thinking: bool = False,
     retry_on_loading: bool = True,
     max_retries: int = 40,
-) -> str:
-    """POST /v1/chat/completions. Returns the text response.
+) -> tuple[str, str]:
+    """POST /v1/chat/completions. Returns (content, thinking).
+
+    When enable_thinking is False, we ask the chat template to skip the
+    <think>...</think> block via chat_template_kwargs; Qwen3-style models
+    respect this. The thinking channel is returned separately so callers can
+    surface it in a dedicated output slot without polluting the main response.
 
     On 503 "loading model" we back off and retry — allma may be starting a
     fresh backend. Raises RuntimeError on unrecoverable errors.
@@ -148,6 +154,8 @@ def chat_completion(
         body["top_k"] = int(top_k)
     if seed is not None and seed >= 0:
         body["seed"] = int(seed)
+    if not enable_thinking:
+        body["chat_template_kwargs"] = {"enable_thinking": False}
 
     data = json.dumps(body).encode("utf-8")
     req = urllib.request.Request(
@@ -167,10 +175,20 @@ def chat_completion(
                 resp = json.load(r)
             choice = resp["choices"][0]
             msg = choice["message"]
-            content = msg.get("content") or ""
-            if not content:
-                content = msg.get("reasoning_content") or msg.get("reasoning") or ""
-            return content
+            content = (msg.get("content") or "").strip()
+            thinking = (
+                msg.get("reasoning_content")
+                or msg.get("reasoning")
+                or ""
+            ).strip()
+            if not content and thinking:
+                if "</think>" in thinking:
+                    parts = thinking.rsplit("</think>", 1)
+                    thinking, tail = parts[0], parts[1].strip()
+                    if tail:
+                        content = tail
+                        thinking = thinking.replace("<think>", "", 1).strip()
+            return content, thinking
         except urllib.error.HTTPError as e:
             body_text = ""
             try:
@@ -192,3 +210,5 @@ def chat_completion(
     raise RuntimeError(
         f"Backend never became ready after {max_retries} retries: {last_err}"
     )
+    # Unreachable; keeps type checkers happy about the return type.
+    return "", ""
