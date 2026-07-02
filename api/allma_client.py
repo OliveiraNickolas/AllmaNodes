@@ -175,6 +175,7 @@ def chat_completion(
                 resp = json.load(r)
             choice = resp["choices"][0]
             msg = choice["message"]
+            finish_reason = (choice.get("finish_reason") or "").lower()
             content = (msg.get("content") or "").strip()
             thinking = (
                 msg.get("reasoning_content")
@@ -188,6 +189,15 @@ def chat_completion(
                     if tail:
                         content = tail
                         thinking = thinking.replace("<think>", "", 1).strip()
+            if not content and thinking and finish_reason == "length":
+                warn = (
+                    f"[allma: response cut off — max_tokens={max_tokens} was "
+                    f"exhausted mid-thinking. Fix: turn 'thinking' OFF, or raise "
+                    f"max_tokens to 4096+, or reset sampling to Qwen3 official "
+                    f"thinking-mode (temperature=1.0, top_p=0.95, top_k=20).]"
+                )
+                print(f"{LOG} ⚠ {warn}")
+                content = warn
             return content, thinking
         except urllib.error.HTTPError as e:
             body_text = ""
