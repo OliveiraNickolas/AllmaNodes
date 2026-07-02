@@ -20,6 +20,72 @@ function widget(node, name) {
   return node.widgets?.find((w) => w.name === name);
 }
 
+const SAMPLING_WIDGETS = ["temperature", "top_p", "top_k", "max_tokens", "seed"];
+
+function toggleWidget(w, show) {
+  if (!w) return;
+  if (show) {
+    if (w._allmaOrigType !== undefined) {
+      w.type = w._allmaOrigType;
+      delete w._allmaOrigType;
+    }
+    if (w._allmaOrigComputeSize !== undefined) {
+      w.computeSize = w._allmaOrigComputeSize;
+      delete w._allmaOrigComputeSize;
+    }
+  } else {
+    if (w._allmaOrigType === undefined) {
+      w._allmaOrigType = w.type;
+    }
+    w.type = "hidden";
+    if (w._allmaOrigComputeSize === undefined) {
+      w._allmaOrigComputeSize = w.computeSize;
+    }
+    w.computeSize = () => [0, -4];
+  }
+}
+
+function applyConnectivityVisibility(node) {
+  const showW = widget(node, "show_sampling");
+  const show = showW?.value ?? false;
+  for (const name of SAMPLING_WIDGETS) {
+    toggleWidget(widget(node, name), show);
+  }
+  if (node.size) {
+    node.setSize(node.computeSize());
+  }
+  node.setDirtyCanvas(true, true);
+}
+
+app.registerExtension({
+  name: "allma.connectivity_ui",
+  async beforeRegisterNodeDef(nodeType, nodeData) {
+    if (nodeData?.name !== "AllmaConnectivity") return;
+
+    const origCreated = nodeType.prototype.onNodeCreated;
+    nodeType.prototype.onNodeCreated = function () {
+      const r = origCreated?.apply(this, arguments);
+      const showW = widget(this, "show_sampling");
+      if (showW) {
+        const origCb = showW.callback;
+        showW.callback = (v) => {
+          origCb?.(v);
+          applyConnectivityVisibility(this);
+        };
+      }
+      setTimeout(() => applyConnectivityVisibility(this), 0);
+      return r;
+    };
+
+    const origConfigure = nodeType.prototype.onConfigure;
+    nodeType.prototype.onConfigure = function () {
+      const r = origConfigure?.apply(this, arguments);
+      setTimeout(() => applyConnectivityVisibility(this), 0);
+      return r;
+    };
+  },
+});
+
 async function refreshPresetDropdown(node) {
   try {
     const { presets } = await API.list();

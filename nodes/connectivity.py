@@ -40,6 +40,12 @@ class AllmaConnectivity:
                 "max_tokens": ("INT", {"default": 2048, "min": 16, "max": 131072}),
                 "seed": ("INT", {"default": -1, "min": -1, "max": 2**31 - 1,
                                   "tooltip": "-1 lets the backend choose (or is ignored)."}),
+                "show_sampling": ("BOOLEAN", {
+                    "default": False,
+                    "tooltip": "When OFF, hides the 5 sampling widgets (temperature, top_p, "
+                    "top_k, max_tokens, seed) so you don't nudge them by mistake while "
+                    "dragging the node. Their values are preserved either way.",
+                }),
             }
         }
 
@@ -52,7 +58,8 @@ class AllmaConnectivity:
     def IS_CHANGED(cls, *args, **kwargs):
         return float("nan")
 
-    def build(self, host, port, timeout, model, temperature, top_p, top_k, max_tokens, seed):
+    def build(self, host, port, timeout, model, temperature, top_p, top_k, max_tokens, seed,
+              show_sampling=False):
         conn = {
             "host": host.strip() or "127.0.0.1",
             "port": int(port),
