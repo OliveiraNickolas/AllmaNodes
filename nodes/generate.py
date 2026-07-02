@@ -11,7 +11,7 @@ from ..api.lora_sniffer import (
     format_triggers_only,
     sniff_loras,
 )
-from .preset import list_preset_names, load_preset
+from .preset import list_preset_names
 
 LOG = "[ComfyUI-Allma/generate]"
 
@@ -113,15 +113,12 @@ class AllmaGenerate:
         if not isinstance(connectivity, dict):
             raise RuntimeError("Missing connectivity input — connect AllmaConnectivity.")
 
+        # The `preset` widget is JS-only: selecting a preset in the dropdown
+        # writes the preset's system_prompt into the system_prompt widget on
+        # the client. By the time we get here, `system_prompt` already holds
+        # the effective text, so we ignore the `preset` name on the server.
+        del preset
         effective_system = system_prompt or ""
-        if preset and preset != "(none)":
-            data = load_preset(preset)
-            if data is None:
-                print(f"{LOG} preset '{preset}' not found; using inline system_prompt")
-            else:
-                preset_sp = (data.get("system_prompt") or "").strip()
-                if preset_sp and not effective_system.strip():
-                    effective_system = preset_sp
 
         if model is not None:
             loras = sniff_loras(model)

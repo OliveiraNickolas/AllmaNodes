@@ -132,14 +132,36 @@ async function refreshPresetDropdown(node) {
 }
 
 async function applyPreset(node, name) {
-  if (!name || name === "(none)") return;
+  // Load preset content into the widget AND update the "clean baseline"
+  // (_allmaPresetOrig) so dirty tracking knows what "unedited" looks like.
+  const sp = widget(node, "system_prompt");
+  if (!name || name === "(none)") {
+    // Switching to "(none)" — leave whatever content is in the widget and
+    // adopt it as the new baseline (so the user isn't nagged about edits).
+    if (sp) node._allmaPresetOrig = sp.value || "";
+    return;
+  }
   const data = await API.load(name);
   if (!data) return;
-  const sp = widget(node, "system_prompt");
   if (sp && typeof data.system_prompt === "string") {
     sp.value = data.system_prompt;
+    node._allmaPresetOrig = data.system_prompt;
     node.setDirtyCanvas(true, true);
   }
+}
+
+function isDirty(node) {
+  const sp = widget(node, "system_prompt");
+  const orig = node._allmaPresetOrig ?? "";
+  return (sp?.value ?? "") !== orig;
+}
+
+async function initPresetTracking(node) {
+  await refreshPresetDropdown(node);
+  const presetW = widget(node, "preset");
+  const spW = widget(node, "system_prompt");
+  node._allmaLastPreset = presetW?.value || "(none)";
+  node._allmaPresetOrig = spW?.value || "";
 }
 
 app.registerExtension({
@@ -155,13 +177,31 @@ app.registerExtension({
       if (presetW) {
         const origCb = presetW.callback;
         presetW.callback = (v) => {
+          const prev = this._allmaLastPreset || "(none)";
+          if (v === prev) {
+            origCb?.(v);
+            return;
+          }
+          if (isDirty(this) && prev !== "(none)") {
+            const ok = confirm(
+              `You have unsaved edits to preset "${prev}". Switch to "${v}" `
+                + `and discard them?`,
+            );
+            if (!ok) {
+              presetW.value = prev;
+              this.setDirtyCanvas(true, true);
+              return;
+            }
+          }
           origCb?.(v);
-          applyPreset(this, v);
+          applyPreset(this, v).then(() => {
+            this._allmaLastPreset = v;
+          });
         };
       }
 
       this.addWidget("button", "➕ new", null, async () => {
-        const name = prompt("Nome do novo preset:");
+        const name = prompt("Name for the new preset:");
         if (!name) return;
         const spVal = widget(this, "system_prompt")?.value || "";
         const res = await API.save(name, { system_prompt: spVal, notes: "" });
@@ -170,6 +210,8 @@ app.registerExtension({
           const w = widget(this, "preset");
           if (w) {
             w.value = res.name || name;
+            this._allmaLastPreset = res.name || name;
+            this._allmaPresetOrig = spVal;
             this.setDirtyCanvas(true, true);
           }
         }
@@ -179,29 +221,52 @@ app.registerExtension({
         const w = widget(this, "preset");
         const name = w?.value;
         if (!name || name === "(none)") {
-          alert("Selecione um preset primeiro (ou use 'new preset').");
+          alert("Select a preset first (or use ➕ new).");
           return;
         }
         const spVal = widget(this, "system_prompt")?.value || "";
         await API.save(name, { system_prompt: spVal, notes: "" });
+        // Widget content is now what's stored — no longer dirty.
+        this._allmaPresetOrig = spVal;
       });
 
       this.addWidget("button", "🔄 reload", null, async () => {
         const w = widget(this, "preset");
+        if (isDirty(this) && w?.value && w.value !== "(none)") {
+          const ok = confirm(
+            `You have unsaved edits to preset "${w.value}". Reload from disk `
+              + "and discard them?",
+          );
+          if (!ok) return;
+        }
         await refreshPresetDropdown(this);
         if (w?.value) await applyPreset(this, w.value);
+        this._allmaLastPreset = w?.value || "(none)";
       });
 
       this.addWidget("button", "🗑️ delete", null, async () => {
         const w = widget(this, "preset");
         const name = w?.value;
         if (!name || name === "(none)") return;
-        if (!confirm(`Deletar preset "${name}"?`)) return;
+        if (!confirm(`Delete preset "${name}"?`)) return;
         await API.del(name);
         await refreshPresetDropdown(this);
+        // Dropdown fell back to "(none)". Widget content is left as-is;
+        // adopt it as the clean baseline so no false-dirty warnings fire.
+        this._allmaLastPreset = w?.value || "(none)";
+        this._allmaPresetOrig = widget(this, "system_prompt")?.value || "";
       });
 
-      setTimeout(() => refreshPresetDropdown(this), 0);
+      setTimeout(() => initPresetTracking(this), 0);
+      return r;
+    };
+
+    const origConfigure = nodeType.prototype.onConfigure;
+    nodeType.prototype.onConfigure = function () {
+      const r = origConfigure?.apply(this, arguments);
+      // After a workflow load, take whatever preset/system_prompt came in
+      // as the clean baseline — user saved it in that state on purpose.
+      setTimeout(() => initPresetTracking(this), 0);
       return r;
     };
   },
