@@ -149,22 +149,50 @@ def sniff_loras(model_obj) -> list[dict]:
 
 
 def format_loras_for_prompt(loras: list[dict]) -> str:
-    """Compact block that goes into the system prompt."""
+    """Compact block that goes into the system prompt.
+
+    The wording is deliberately imperative — smaller local models tend to skip
+    the low-priority "Activate LoRAs correctly" rule when it's just presented
+    as context. Framing the trigger words as mandatory raises the odds they
+    survive into the final prompt.
+    """
     if not loras:
         return ""
-    lines = ["Active LoRAs in this workflow:"]
-    for lora in loras:
-        parts = [f"- {lora.get('name') or lora.get('file') or 'unknown'}"]
-        if lora.get("trigger_words"):
-            parts.append(f'trigger words: "{lora["trigger_words"]}"')
-        if lora.get("notes"):
-            parts.append(f"notes: {lora['notes']}")
-        tips = lora.get("usage_tips")
-        if isinstance(tips, dict) and tips:
-            tip_txt = "; ".join(f"{k}: {v}" for k, v in tips.items() if v)
-            if tip_txt:
-                parts.append(f"tips: {tip_txt}")
-        elif isinstance(tips, str) and tips.strip():
-            parts.append(f"tips: {tips.strip()}")
-        lines.append("  " + "  ·  ".join(parts))
+    triggered = [l for l in loras if l.get("trigger_words")]
+    plain = [l for l in loras if not l.get("trigger_words")]
+
+    lines: list[str] = []
+    if triggered:
+        lines.append(
+            "MANDATORY LoRA trigger words — every quoted phrase below MUST appear "
+            "verbatim in the final prompt, woven naturally into the description "
+            "(not as a tag list at the end):"
+        )
+        for lora in triggered:
+            name = lora.get("name") or lora.get("file") or "unknown"
+            trig = lora["trigger_words"]
+            line = f'  * {name} — required trigger words: "{trig}"'
+            extras = []
+            if lora.get("notes"):
+                extras.append(f"notes: {lora['notes']}")
+            tips = lora.get("usage_tips")
+            if isinstance(tips, dict) and tips:
+                tip_txt = "; ".join(f"{k}: {v}" for k, v in tips.items() if v)
+                if tip_txt:
+                    extras.append(f"tips: {tip_txt}")
+            elif isinstance(tips, str) and tips.strip():
+                extras.append(f"tips: {tips.strip()}")
+            if extras:
+                line += "  (" + " · ".join(extras) + ")"
+            lines.append(line)
+    if plain:
+        if triggered:
+            lines.append("")
+        lines.append("Additional active LoRAs (no trigger word registered — style influence only):")
+        for lora in plain:
+            name = lora.get("name") or lora.get("file") or "unknown"
+            line = f"  * {name}"
+            if lora.get("notes"):
+                line += f"  (notes: {lora['notes']})"
+            lines.append(line)
     return "\n".join(lines)
