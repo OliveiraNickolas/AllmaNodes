@@ -28,6 +28,15 @@ from pathlib import Path
 
 LOG = "[ComfyUI-Allma/lora_sniffer]"
 
+# Where we look for user-written hint overrides. The directory lives inside
+# the plugin (not next to the LoRA files) so the user's models/loras stays
+# untouched. First lookup that matches wins; see _load_curated_hints below.
+_HINTS_DIR = Path(__file__).resolve().parent.parent / "lora_hints"
+try:
+    _HINTS_DIR.mkdir(parents=True, exist_ok=True)
+except Exception:
+    pass
+
 
 def _read_json(path: Path) -> dict:
     try:
@@ -183,6 +192,37 @@ def _lora_manager_meta(safetensors_path: str) -> dict:
     }
 
 
+def _load_curated_hints(safetensors_path: str) -> str:
+    """Look for a user-written override file in <ComfyUI-Allma>/lora_hints/.
+
+    We try three lookups in order and return the first that exists:
+      1. `<stem>.md`                            (LTX2.3_reasoning_Sulphur.md)
+      2. `<parent_dir>_<stem>.md`               (LTX-2.3_LTX2.3_reasoning...md)
+      3. `<stem>.txt`                           (fallback for plain-text folks)
+
+    Content is returned stripped, no parsing. Write markdown, plain text,
+    a JSON blob, whatever — it's injected verbatim into the LoRA block as
+    `human_curated_hints`, which takes precedence over the auto-extracted
+    format hints and the raw description."""
+    p = Path(safetensors_path)
+    stem = p.stem
+    parent = p.parent.name
+    candidates = [
+        _HINTS_DIR / f"{stem}.md",
+        _HINTS_DIR / f"{parent}_{stem}.md" if parent else None,
+        _HINTS_DIR / f"{stem}.txt",
+    ]
+    for cand in candidates:
+        if cand is None or not cand.exists():
+            continue
+        try:
+            return cand.read_text(encoding="utf-8").strip()
+        except Exception as e:
+            print(f"{LOG} failed to read curated hints {cand}: {e}")
+            return ""
+    return ""
+
+
 def _safetensors_internal(meta: dict) -> dict:
     """The safetensors' own metadata dict — occasionally holds tag frequencies."""
     if not isinstance(meta, dict):
@@ -248,6 +288,7 @@ def sniff_loras(model_obj) -> list[dict]:
             "base_model": lm.get("base_model") or "",
             "usage_tips": lm.get("usage_tips") or "",
             "model_description": lm.get("model_description") or "",
+            "human_curated_hints": _load_curated_hints(path),
             "internal_meta": _safetensors_internal(ss_meta),
         })
     return out
@@ -281,6 +322,16 @@ def _format_lora_entry(lora: dict) -> str:
     tips = _tips_to_text(lora.get("usage_tips"))
     if tips:
         lines.append(f"      usage_tips: {tips}")
+
+    curated = (lora.get("human_curated_hints") or "").strip()
+    if curated:
+        # User curated the guidance by hand — trust it completely and skip
+        # the auto-extraction + full description. This keeps the block
+        # short and unambiguous when the human has already spoken.
+        lines.append("      human_curated_hints (prescriptive; overrides auto-extraction):")
+        for cline in curated.splitlines():
+            lines.append(f"        {cline}")
+        return "\n".join(lines)
 
     desc = (lora.get("model_description") or "").strip()
     if desc:
@@ -334,16 +385,19 @@ def format_loras_for_prompt(loras: list[dict]) -> str:
         return ""
     header = (
         "The following LoRAs are active in this workflow. For each one, "
-        "read the fields (trigger_words, notes, usage_tips, "
-        "format_hints_extracted_from_description, description) and take "
-        "them into account when writing the final prompt. When a LoRA "
-        "exposes format_hints_extracted_from_description, treat those "
-        "extracted sentences as prescriptive: they are the author's "
-        "own words about how the prompt for this LoRA should be shaped "
-        "(structure, blocks, required elements). They outrank any "
-        "default format assumed by the base preset. Any trigger_words "
-        "shown must appear verbatim in the output — they are literal "
-        "tokens the LoRA was trained on, not concepts to paraphrase."
+        "read the fields available (trigger_words, notes, usage_tips, "
+        "human_curated_hints, format_hints_extracted_from_description, "
+        "description) and take them into account when writing the final "
+        "prompt. Precedence for how the final prompt must be shaped: "
+        "(1) human_curated_hints — hand-written by the workflow author "
+        "for this specific LoRA; treat as ground truth. "
+        "(2) format_hints_extracted_from_description — auto-extracted "
+        "prescriptive sentences from the LoRA's card. "
+        "(3) description — raw author write-up, use for context. "
+        "All three outrank any default format assumed by the base "
+        "preset. Any trigger_words shown must appear verbatim in the "
+        "output — they are literal tokens the LoRA was trained on, "
+        "not concepts to paraphrase."
     )
     lines = [header]
     for lora in loras:

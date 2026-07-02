@@ -9,3 +9,7 @@ __pycache__/
 presets/*.json
 !presets/.gitkeep
 !presets/_example_*.json
+
+lora_hints/*.md
+lora_hints/*.txt
+!lora_hints/.gitkeep
