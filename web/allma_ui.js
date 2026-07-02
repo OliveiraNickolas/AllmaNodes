@@ -21,6 +21,7 @@ function widget(node, name) {
 }
 
 const SAMPLING_WIDGETS = ["temperature", "top_p", "top_k", "max_tokens", "seed"];
+const HIDDEN_MARK = "allma-hidden";
 
 function toggleWidget(w, show) {
   if (!w) return;
@@ -33,28 +34,38 @@ function toggleWidget(w, show) {
       w.computeSize = w._allmaOrigComputeSize;
       delete w._allmaOrigComputeSize;
     }
+    w.hidden = false;
+    if (w.element) w.element.hidden = false;
   } else {
     if (w._allmaOrigType === undefined) {
       w._allmaOrigType = w.type;
     }
-    w.type = "hidden";
     if (w._allmaOrigComputeSize === undefined) {
       w._allmaOrigComputeSize = w.computeSize;
     }
+    w.type = HIDDEN_MARK;
     w.computeSize = () => [0, -4];
+    w.hidden = true;
+    if (w.element) w.element.hidden = true;
   }
 }
 
 function applyConnectivityVisibility(node) {
   const showW = widget(node, "show_sampling");
   const show = showW?.value ?? false;
+  console.log(
+    `[ComfyUI-Allma] AllmaConnectivity #${node.id}: show_sampling=${show}, `
+      + `hiding=${SAMPLING_WIDGETS.filter((n) => widget(node, n)).length} widgets`,
+  );
   for (const name of SAMPLING_WIDGETS) {
     toggleWidget(widget(node, name), show);
   }
-  if (node.size) {
-    node.setSize(node.computeSize());
+  if (typeof node.computeSize === "function") {
+    const s = node.computeSize();
+    node.setSize([Math.max(node.size?.[0] ?? s[0], s[0]), s[1]]);
   }
   node.setDirtyCanvas(true, true);
+  if (app.canvas) app.canvas.setDirty(true, true);
 }
 
 app.registerExtension({
