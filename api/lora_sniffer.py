@@ -15,9 +15,48 @@ and path — and then combine three sidecar formats to recover the trigger word:
 Gracefully returns [] when nothing is found instead of crashing the node.
 """
 import json
+import re
 from pathlib import Path
 
 LOG = "[ComfyUI-Allma/lora_sniffer]"
+
+
+NAME_HINT_PATTERNS: list[tuple[str, str]] = [
+    (
+        r"\bvbvr\b",
+        "Prefers VBVR structure — the final prompt MUST use blocks "
+        "STARTING STATE / ACTION SEQUENCE (Step 1, Step 2, ...) / CAMERA / "
+        "CONSISTENCY instead of a flowing paragraph. Present tense throughout.",
+    ),
+    (
+        r"\breasoning\b",
+        "Structured-reasoning LoRA — prefer explicit numbered action beats "
+        "over a single flowing paragraph.",
+    ),
+    (
+        r"talking[_ -]?head|talkvid|celebvhq",
+        'Talking-head LoRA — use the exact format: [full visual description of '
+        'the subject and setting], speaking, saying: "the exact words". '
+        "Single character only.",
+    ),
+    (
+        r"\bi2v\b|image[_ -]?to[_ -]?video",
+        "Image-to-video LoRA — focus the prompt on MOTION and what happens "
+        "next; keep the restatement of the reference image brief.",
+    ),
+]
+
+
+def _detect_name_hints(name: str) -> list[str]:
+    """Look at the LoRA name for structural markers when the sidecar JSONs
+    are empty. Zero-friction alternative to manually editing metadata."""
+    if not name:
+        return []
+    found: list[str] = []
+    for pattern, hint in NAME_HINT_PATTERNS:
+        if re.search(pattern, name, re.IGNORECASE):
+            found.append(hint)
+    return found
 
 
 def _read_json(path: Path) -> dict:
@@ -135,64 +174,82 @@ def sniff_loras(model_obj) -> list[dict]:
             or Path(path).stem
         )
         notes = lm.get("notes") or rg.get("description") or ""
+
+        display_name = name or Path(path).stem
+        file_name = entry.get("name") or Path(path).name
+
+        auto_hints = _detect_name_hints(display_name) + _detect_name_hints(file_name)
+        auto_hints = list(dict.fromkeys(auto_hints))
+
         out.append({
-            "name": name,
-            "file": entry.get("name") or Path(path).name,
+            "name": display_name,
+            "file": file_name,
             "trigger_words": trigger,
             "notes": notes,
             "tags": lm.get("tags") or rg.get("tags") or [],
             "base_model": lm.get("base_model") or "",
             "usage_tips": lm.get("usage_tips") or "",
+            "auto_hints": auto_hints,
             "internal_meta": _safetensors_internal(ss_meta),
         })
     return out
 
 
-def format_loras_for_prompt(loras: list[dict]) -> str:
-    """Compact block that goes into the system prompt.
+def _tips_to_text(tips) -> str:
+    if isinstance(tips, dict) and tips:
+        return "; ".join(f"{k}: {v}" for k, v in tips.items() if v)
+    if isinstance(tips, str):
+        return tips.strip()
+    return ""
 
-    The wording is deliberately imperative — smaller local models tend to skip
-    the low-priority "Activate LoRAs correctly" rule when it's just presented
-    as context. Framing the trigger words as mandatory raises the odds they
-    survive into the final prompt.
+
+def _format_lora_entry(lora: dict) -> str:
+    """Render one LoRA into a multi-line entry that surfaces every signal
+    the LLM might act on: trigger words, structural hints (from name),
+    notes and usage_tips."""
+    name = lora.get("name") or lora.get("file") or "unknown"
+    trig = (lora.get("trigger_words") or "").strip()
+    header = f"  * {name}"
+    if trig:
+        header += f' — MUST include verbatim: "{trig}"'
+    lines = [header]
+
+    hints = lora.get("auto_hints") or []
+    if hints:
+        for h in hints:
+            lines.append(f"      - structural hint (inferred from name): {h}")
+
+    notes = (lora.get("notes") or "").strip()
+    if notes:
+        lines.append(f"      - notes: {notes}")
+
+    tips = _tips_to_text(lora.get("usage_tips"))
+    if tips:
+        lines.append(f"      - usage tips: {tips}")
+
+    return "\n".join(lines)
+
+
+def format_loras_for_prompt(loras: list[dict]) -> str:
+    """Compact but directive block that goes into the system prompt.
+
+    We stop segregating LoRAs into "triggered" vs "style influence only" —
+    that soft framing caused the LLM to ignore LoRAs whose metadata JSONs
+    were empty even when the file name itself signalled structure (e.g.
+    "reasoning ... VBVR"). Now every LoRA lands in one imperative block,
+    with any trigger words / name-inferred hints / notes / tips exposed
+    side-by-side so nothing gets skipped.
     """
     if not loras:
         return ""
-    triggered = [l for l in loras if l.get("trigger_words")]
-    plain = [l for l in loras if not l.get("trigger_words")]
-
-    lines: list[str] = []
-    if triggered:
-        lines.append(
-            "MANDATORY LoRA trigger words — every quoted phrase below MUST appear "
-            "verbatim in the final prompt, woven naturally into the description "
-            "(not as a tag list at the end):"
-        )
-        for lora in triggered:
-            name = lora.get("name") or lora.get("file") or "unknown"
-            trig = lora["trigger_words"]
-            line = f'  * {name} — required trigger words: "{trig}"'
-            extras = []
-            if lora.get("notes"):
-                extras.append(f"notes: {lora['notes']}")
-            tips = lora.get("usage_tips")
-            if isinstance(tips, dict) and tips:
-                tip_txt = "; ".join(f"{k}: {v}" for k, v in tips.items() if v)
-                if tip_txt:
-                    extras.append(f"tips: {tip_txt}")
-            elif isinstance(tips, str) and tips.strip():
-                extras.append(f"tips: {tips.strip()}")
-            if extras:
-                line += "  (" + " · ".join(extras) + ")"
-            lines.append(line)
-    if plain:
-        if triggered:
-            lines.append("")
-        lines.append("Additional active LoRAs (no trigger word registered — style influence only):")
-        for lora in plain:
-            name = lora.get("name") or lora.get("file") or "unknown"
-            line = f"  * {name}"
-            if lora.get("notes"):
-                line += f"  (notes: {lora['notes']})"
-            lines.append(line)
+    lines = [
+        "ACTIVE LoRAs in this workflow — every entry below is authoritative. "
+        "Trigger words MUST appear verbatim in the final prompt. Structural "
+        "hints, notes and usage_tips outrank the preset's default structure. "
+        "Read the entry's name carefully — many LoRAs encode required "
+        "structure or format in the name itself (e.g. 'VBVR', 'reasoning', "
+        "'talking-head', 'i2v')."
+    ]
+    for lora in loras:
+        lines.append(_format_lora_entry(lora))
     return "\n".join(lines)
