@@ -20,32 +20,46 @@ function widget(node, name) {
   return node.widgets?.find((w) => w.name === name);
 }
 
-const SAMPLING_WIDGETS = ["temperature", "top_p", "top_k", "max_tokens", "seed"];
+const SAMPLING_WIDGETS = [
+  "temperature",
+  "top_p",
+  "top_k",
+  "max_tokens",
+  "seed",
+  "control_after_generate",
+  "control after generate",
+];
+
+function hasOwn(obj, key) {
+  return Object.prototype.hasOwnProperty.call(obj, key);
+}
 
 function toggleWidget(w, show) {
   if (!w) return;
   if (show) {
-    if (w._allmaOrigType !== undefined) {
-      w.type = w._allmaOrigType;
-      delete w._allmaOrigType;
+    if (!w._allmaOrig) return;
+    const bak = w._allmaOrig;
+    w.type = bak.type;
+    if (bak.hadOwnComputeSize) {
+      w.computeSize = bak.computeSize;
+    } else {
+      delete w.computeSize;
     }
-    if (w._allmaOrigComputeSize !== undefined) {
-      w.computeSize = w._allmaOrigComputeSize;
-      delete w._allmaOrigComputeSize;
+    if (bak.hadOwnDraw) {
+      w.draw = bak.draw;
+    } else {
+      delete w.draw;
     }
-    if (w._allmaOrigDraw !== undefined) {
-      w.draw = w._allmaOrigDraw;
-      delete w._allmaOrigDraw;
-    }
+    delete w._allmaOrig;
   } else {
-    if (w._allmaOrigType === undefined) {
-      w._allmaOrigType = w.type;
-    }
-    if (w._allmaOrigComputeSize === undefined) {
-      w._allmaOrigComputeSize = w.computeSize;
-    }
-    if (w._allmaOrigDraw === undefined) {
-      w._allmaOrigDraw = w.draw;
+    if (!w._allmaOrig) {
+      w._allmaOrig = {
+        type: w.type,
+        hadOwnComputeSize: hasOwn(w, "computeSize"),
+        computeSize: w.computeSize,
+        hadOwnDraw: hasOwn(w, "draw"),
+        draw: w.draw,
+      };
     }
     w.type = "converted-widget";
     w.computeSize = () => [0, -4];
