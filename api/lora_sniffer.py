@@ -66,6 +66,36 @@ def _read_json(path: Path) -> dict:
         return {}
 
 
+_HTML_TAG_RE = re.compile(r"<[^>]+>")
+_HTML_ENTITIES = {
+    "&nbsp;": " ",
+    "&amp;": "&",
+    "&lt;": "<",
+    "&gt;": ">",
+    "&quot;": '"',
+    "&#39;": "'",
+    "&apos;": "'",
+}
+
+
+def _clean_description(raw: str, max_chars: int = 3500) -> str:
+    """Strip HTML, decode common entities, collapse whitespace, cap length.
+
+    LoRA Manager stores the Civitai model description verbatim as HTML in
+    `modelDescription`. Authors routinely put the required prompt structure,
+    format examples and trigger patterns in there, so we mine it — but we
+    also cap the length so a 25kB write-up doesn't blow the system prompt."""
+    if not raw or not isinstance(raw, str):
+        return ""
+    text = _HTML_TAG_RE.sub(" ", raw)
+    for k, v in _HTML_ENTITIES.items():
+        text = text.replace(k, v)
+    text = re.sub(r"\s+", " ", text).strip()
+    if len(text) > max_chars:
+        text = text[:max_chars].rstrip() + " […truncated]"
+    return text
+
+
 def _rgthree_info(safetensors_path: str) -> dict:
     p = Path(safetensors_path + ".rgthree-info.json")
     if not p.exists():
@@ -112,6 +142,15 @@ def _lora_manager_meta(safetensors_path: str) -> dict:
             tips = json.loads(tips)
         except Exception:
             pass
+    desc_raw = data.get("modelDescription") or data.get("model_description") or ""
+    if not desc_raw:
+        civ = data.get("civitai")
+        if isinstance(civ, dict):
+            m = civ.get("model")
+            if isinstance(m, dict):
+                desc_raw = m.get("description") or ""
+            if not desc_raw:
+                desc_raw = civ.get("description") or ""
     return {
         "trigger_words": (trigger or "").strip(),
         "notes": (data.get("notes") or "").strip(),
@@ -119,6 +158,7 @@ def _lora_manager_meta(safetensors_path: str) -> dict:
         "tags": data.get("tags") or [],
         "manager_name": (data.get("model_name") or "").strip(),
         "base_model": data.get("base_model") or "",
+        "model_description": _clean_description(desc_raw),
     }
 
 
@@ -189,6 +229,7 @@ def sniff_loras(model_obj) -> list[dict]:
             "tags": lm.get("tags") or rg.get("tags") or [],
             "base_model": lm.get("base_model") or "",
             "usage_tips": lm.get("usage_tips") or "",
+            "model_description": lm.get("model_description") or "",
             "auto_hints": auto_hints,
             "internal_meta": _safetensors_internal(ss_meta),
         })
@@ -227,6 +268,13 @@ def _format_lora_entry(lora: dict) -> str:
     if tips:
         lines.append(f"      - usage tips: {tips}")
 
+    desc = (lora.get("model_description") or "").strip()
+    if desc:
+        lines.append(
+            f"      - author description (mine this for required structure / "
+            f"format / trigger patterns): {desc}"
+        )
+
     return "\n".join(lines)
 
 
@@ -245,8 +293,11 @@ def format_loras_for_prompt(loras: list[dict]) -> str:
     lines = [
         "ACTIVE LoRAs in this workflow — every entry below is authoritative. "
         "Trigger words MUST appear verbatim in the final prompt. Structural "
-        "hints, notes and usage_tips outrank the preset's default structure. "
-        "Read the entry's name carefully — many LoRAs encode required "
+        "hints, notes, usage_tips AND the author description outrank the "
+        "preset's default structure — if the author description spells out a "
+        "specific prompt format (e.g. blocks like STARTING STATE / ACTION "
+        "SEQUENCE / CAMERA / CONSISTENCY), you MUST follow that format. "
+        "Read the entry's name carefully too — many LoRAs encode required "
         "structure or format in the name itself (e.g. 'VBVR', 'reasoning', "
         "'talking-head', 'i2v')."
     ]
