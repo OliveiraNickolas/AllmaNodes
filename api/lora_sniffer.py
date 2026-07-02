@@ -48,6 +48,62 @@ _HTML_ENTITIES = {
 }
 
 
+_SIGNAL_PREFIXES = frozenset([
+    "prompt", "format", "structur", "template", "describ", "starting",
+    "state", "action", "camera", "consistency", "block", "example",
+    "follow", "verbatim", "includ", "must", "should", "use", "writ",
+    "avoid", "literal", "precise", "trigger", "activat", "step",
+    "shot", "scene", "sequence", "beat",
+])
+_WORD_RE = re.compile(r"[a-z]+")
+_SENTENCE_SPLIT_RE = re.compile(r"(?<=[.!?])\s+(?=[A-Z0-9\"])")
+
+
+def _signal_score(sentence: str) -> int:
+    return sum(
+        1
+        for w in _WORD_RE.findall(sentence.lower())
+        if any(w.startswith(p) for p in _SIGNAL_PREFIXES)
+    )
+
+
+def _extract_format_hints(text: str, max_sentences: int = 4) -> list[str]:
+    """Pull sentences from a cleaned description that read like format
+    guidance — sentences packed with words like 'prompt', 'format',
+    'describe', 'starting state', 'action', 'camera', 'follow', 'must'.
+
+    Civitai descriptions often bury the actual prompting instructions
+    in thousands of chars of flavour text (credits, ko-fi links,
+    training details, version history). A smart LLM still misses the
+    signal when it's diluted like that. We surface the top-scoring
+    sentences at the top of the LoRA's entry so the enhancer sees the
+    format rules first, then can consult the full description below
+    for context."""
+    if not text:
+        return []
+    sentences = _SENTENCE_SPLIT_RE.split(text)
+    scored: list[tuple[int, str]] = []
+    for raw in sentences:
+        s = raw.strip().rstrip(",;:")
+        if not (40 <= len(s) <= 300):
+            continue
+        score = _signal_score(s)
+        if score >= 3:
+            scored.append((score, s))
+    scored.sort(key=lambda x: (-x[0], len(x[1])))
+    out: list[str] = []
+    seen: set[str] = set()
+    for _, s in scored:
+        key = s.lower()[:60]
+        if key in seen:
+            continue
+        seen.add(key)
+        out.append(s)
+        if len(out) >= max_sentences:
+            break
+    return out
+
+
 def _clean_description(raw: str, max_chars: int = 3500) -> str:
     """Strip HTML, decode common entities, collapse whitespace, cap length."""
     if not raw or not isinstance(raw, str):
@@ -228,6 +284,11 @@ def _format_lora_entry(lora: dict) -> str:
 
     desc = (lora.get("model_description") or "").strip()
     if desc:
+        hints = _extract_format_hints(desc)
+        if hints:
+            lines.append("      format_hints_extracted_from_description:")
+            for h in hints:
+                lines.append(f"        > {h}")
         lines.append(f"      description: {desc}")
 
     return "\n".join(lines)
@@ -273,12 +334,16 @@ def format_loras_for_prompt(loras: list[dict]) -> str:
         return ""
     header = (
         "The following LoRAs are active in this workflow. For each one, "
-        "read the fields (trigger_words, notes, usage_tips, description) "
-        "and take them into account when writing the final prompt. If a "
-        "LoRA's description or usage_tips specifies a required prompt "
-        "format, structure, or example, follow it. Any trigger_words "
-        "shown must appear verbatim in the output — they are literal tokens "
-        "the LoRA was trained on, not concepts to paraphrase."
+        "read the fields (trigger_words, notes, usage_tips, "
+        "format_hints_extracted_from_description, description) and take "
+        "them into account when writing the final prompt. When a LoRA "
+        "exposes format_hints_extracted_from_description, treat those "
+        "extracted sentences as prescriptive: they are the author's "
+        "own words about how the prompt for this LoRA should be shaped "
+        "(structure, blocks, required elements). They outrank any "
+        "default format assumed by the base preset. Any trigger_words "
+        "shown must appear verbatim in the output — they are literal "
+        "tokens the LoRA was trained on, not concepts to paraphrase."
     )
     lines = [header]
     for lora in loras:

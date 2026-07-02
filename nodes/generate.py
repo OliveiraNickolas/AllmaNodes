@@ -83,8 +83,8 @@ class AllmaGenerate:
             },
         }
 
-    RETURN_TYPES = ("STRING", "STRING")
-    RETURN_NAMES = ("response", "thinking")
+    RETURN_TYPES = ("STRING", "STRING", "STRING")
+    RETURN_NAMES = ("response", "thinking", "assembled_system_prompt")
     FUNCTION = "generate"
     CATEGORY = "Allma"
 
@@ -186,4 +186,4 @@ class AllmaGenerate:
             seed=connectivity.get("seed", -1),
             enable_thinking=bool(thinking),
         )
-        return (response, thought if thinking else "")
+        return (response, thought if thinking else "", effective_system)
