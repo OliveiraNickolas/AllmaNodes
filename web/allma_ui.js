@@ -21,7 +21,6 @@ function widget(node, name) {
 }
 
 const SAMPLING_WIDGETS = ["temperature", "top_p", "top_k", "max_tokens", "seed"];
-const HIDDEN_MARK = "allma-hidden";
 
 function toggleWidget(w, show) {
   if (!w) return;
@@ -34,8 +33,10 @@ function toggleWidget(w, show) {
       w.computeSize = w._allmaOrigComputeSize;
       delete w._allmaOrigComputeSize;
     }
-    w.hidden = false;
-    if (w.element) w.element.hidden = false;
+    if (w._allmaOrigDraw !== undefined) {
+      w.draw = w._allmaOrigDraw;
+      delete w._allmaOrigDraw;
+    }
   } else {
     if (w._allmaOrigType === undefined) {
       w._allmaOrigType = w.type;
@@ -43,10 +44,15 @@ function toggleWidget(w, show) {
     if (w._allmaOrigComputeSize === undefined) {
       w._allmaOrigComputeSize = w.computeSize;
     }
-    w.type = HIDDEN_MARK;
+    if (w._allmaOrigDraw === undefined) {
+      w._allmaOrigDraw = w.draw;
+    }
+    w.type = "converted-widget";
     w.computeSize = () => [0, -4];
-    w.hidden = true;
-    if (w.element) w.element.hidden = true;
+    w.draw = () => {};
+    if (typeof w.serializeValue !== "function") {
+      w.serializeValue = () => w.value;
+    }
   }
 }
 
