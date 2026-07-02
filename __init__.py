@@ -5,10 +5,16 @@ Talks to the Allma backend (OpenAI-compatible) with two nodes:
   - AllmaGenerate:     images + audio + system/user prompt → text
 Plus preset CRUD via HTTP + JS extension for the preset buttons.
 """
+from .api.lora_intercept import install as _install_lora_intercept
 from .nodes.connectivity import AllmaConnectivity
 from .nodes.generate import AllmaGenerate
 from .nodes.load_image import AllmaLoadImage
 from .nodes.preset import register_preset_endpoints
+
+try:
+    _install_lora_intercept()
+except Exception as _e:
+    print(f"[ComfyUI-Allma] lora intercept not installed: {_e}")
 
 NODE_CLASS_MAPPINGS = {
     "AllmaConnectivity": AllmaConnectivity,
