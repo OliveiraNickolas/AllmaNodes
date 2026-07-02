@@ -73,15 +73,6 @@ class AllmaGenerate:
                 "image_3": ("IMAGE",),
                 "image_3_meta": ("STRING", {"forceInput": True}),
                 "audio": ("AUDIO",),
-                "lora_hints": ("STRING", {
-                    "multiline": True,
-                    "default": "",
-                    "tooltip": "Manual override / addition — one LoRA per line, e.g.\n"
-                    "sulphur_lora (0.7) — trigger: sulphur_v3, cinematic\n"
-                    "When 'use_lora_triggers' is ON, these are appended AFTER the auto-sniffed "
-                    "list. When OFF, only these are sent (useful when the sniffer can't find your "
-                    "custom LoRA loader).",
-                }),
             },
         }
 
@@ -111,7 +102,6 @@ class AllmaGenerate:
         image_3=None,
         image_3_meta=None,
         audio=None,
-        lora_hints="",
     ):
         if not isinstance(connectivity, dict):
             raise RuntimeError("Missing connectivity input — connect AllmaConnectivity.")
@@ -126,21 +116,13 @@ class AllmaGenerate:
                 if preset_sp and not effective_system.strip():
                     effective_system = preset_sp
 
-        lora_block = ""
         if use_lora_triggers:
             loras = sniff_loras(model) if model is not None else []
             if loras:
-                lora_block = format_loras_for_prompt(loras)
+                effective_system = (
+                    effective_system + "\n\n" + format_loras_for_prompt(loras)
+                ).strip()
                 print(f"{LOG} sniffed {len(loras)} LoRA(s): {[l['name'] for l in loras]}")
-            hints_text = (lora_hints or "").strip()
-            if hints_text:
-                extra = "Additional LoRA hints (user-provided):\n" + "\n".join(
-                    "  " + line.strip() for line in hints_text.splitlines() if line.strip()
-                )
-                lora_block = (lora_block + "\n\n" + extra).strip() if lora_block else extra
-                print(f"{LOG} added manual lora_hints ({len(hints_text.splitlines())} lines)")
-            if lora_block:
-                effective_system = (effective_system + "\n\n" + lora_block).strip()
 
         if use_image_metadata:
             meta_blocks: list[str] = []
