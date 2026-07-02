@@ -6,7 +6,11 @@ from ..api.allma_client import (
     chat_completion,
     image_tensor_to_data_url,
 )
-from ..api.lora_sniffer import format_loras_for_prompt, sniff_loras
+from ..api.lora_sniffer import (
+    format_loras_for_prompt,
+    format_triggers_only,
+    sniff_loras,
+)
 from .preset import list_preset_names, load_preset
 
 LOG = "[ComfyUI-Allma/generate]"
@@ -53,14 +57,17 @@ class AllmaGenerate:
                         "('thinking') so it doesn't leak into 'response'.",
                     },
                 ),
-                "use_lora_triggers": (
+                "read_lora_metadata": (
                     "BOOLEAN",
                     {
                         "default": True,
-                        "tooltip": "ON: when MODEL is connected, sniff applied LoRAs (name + trigger "
-                        "words from Lora Manager / rgthree-info sidecars) and inject them into the "
-                        "system prompt so the LLM weaves them into the final prompt. OFF: ignore "
-                        "LoRAs even if MODEL is plugged.",
+                        "tooltip": "ON: when MODEL is connected, inject each LoRA's full "
+                        "sidecar block (trigger_words + notes + usage_tips + author "
+                        "description) into the system prompt so the LLM can mine the "
+                        "author's prompt-format guidance. Costs more tokens + more "
+                        "reasoning effort. OFF: still inject trigger_words (they are "
+                        "literal tokens the LoRA needs to activate and are practically "
+                        "free), but skip the rest.",
                     },
                 ),
             },
@@ -93,7 +100,7 @@ class AllmaGenerate:
         user_prompt,
         use_image_metadata,
         thinking,
-        use_lora_triggers,
+        read_lora_metadata,
         model=None,
         image_1=None,
         image_1_meta=None,
@@ -116,13 +123,21 @@ class AllmaGenerate:
                 if preset_sp and not effective_system.strip():
                     effective_system = preset_sp
 
-        if use_lora_triggers:
-            loras = sniff_loras(model) if model is not None else []
+        if model is not None:
+            loras = sniff_loras(model)
             if loras:
-                effective_system = (
-                    effective_system + "\n\n" + format_loras_for_prompt(loras)
-                ).strip()
-                print(f"{LOG} sniffed {len(loras)} LoRA(s): {[l['name'] for l in loras]}")
+                if read_lora_metadata:
+                    block = format_loras_for_prompt(loras)
+                    mode = "full metadata"
+                else:
+                    block = format_triggers_only(loras)
+                    mode = "triggers only"
+                if block:
+                    effective_system = (effective_system + "\n\n" + block).strip()
+                print(
+                    f"{LOG} sniffed {len(loras)} LoRA(s) [{mode}]: "
+                    f"{[l['name'] for l in loras]}"
+                )
 
         if use_image_metadata:
             meta_blocks: list[str] = []

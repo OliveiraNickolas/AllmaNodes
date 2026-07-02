@@ -233,6 +233,33 @@ def _format_lora_entry(lora: dict) -> str:
     return "\n".join(lines)
 
 
+def format_triggers_only(loras: list[dict]) -> str:
+    """Minimal block that only surfaces trigger words.
+
+    Used when the user asks us NOT to feed the full metadata to the LLM
+    (to save tokens / effort) — but trigger words are still cheap and
+    literally required for the LoRA to activate, so we always inject
+    them when they exist.
+
+    Returns "" if none of the sniffed LoRAs have trigger words."""
+    if not loras:
+        return ""
+    lines: list[str] = []
+    for lora in loras:
+        trig = (lora.get("trigger_words") or "").strip()
+        if not trig:
+            continue
+        name = lora.get("name") or lora.get("file") or "unknown"
+        lines.append(f"  * {name} — trigger_words: {trig}")
+    if not lines:
+        return ""
+    header = (
+        "Active LoRA trigger words. These are literal tokens the LoRAs "
+        "were trained on — include them verbatim in the final prompt."
+    )
+    return header + "\n" + "\n".join(lines)
+
+
 def format_loras_for_prompt(loras: list[dict]) -> str:
     """Emit a plain, factual LoRA block for the system prompt.
 
