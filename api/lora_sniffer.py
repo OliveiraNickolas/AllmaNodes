@@ -2,15 +2,23 @@
 
 We rely on the intercept module (`lora_intercept.install()`) — which tags each
 applied LoRA on `ModelPatcher.attachments["_allma_loras"]` with its filename
-and path — and then combine three sidecar formats to recover the trigger word:
+and path — and then combine three sidecar formats to recover the trigger word
+and any prompt-format guidance the author left behind:
 
   1. `<name>.safetensors.rgthree-info.json` — has `trainedWords` (Civitai data
-     fetched by rgthree; the most reliable source).
-  2. `<name>.metadata.json`                 — LoRA Manager sidecar. Sometimes
-     has `trigger_words`, often null.
+     fetched by rgthree; the most reliable source of trigger words).
+  2. `<name>.metadata.json`                 — LoRA Manager sidecar. Has
+     `trigger_words`, `notes`, `usage_tips` and the full Civitai model card
+     body as HTML in `modelDescription`.
   3. `attachments["lora_metadata"]`         — raw metadata dict from inside
      the safetensors file. Rare, but occasionally holds `ss_tag_frequency`
      or `ss_metadata`.
+
+We intentionally do NOT try to summarise, interpret or hardcode rules per
+LoRA family here. The philosophy is: hand the LLM the raw facts we have
+(name, trigger words, notes, tips, cleaned description) and let the
+preset instruct it to actually READ those facts. That way the sniffer
+stays useful for LoRAs nobody has heard of yet.
 
 Gracefully returns [] when nothing is found instead of crashing the node.
 """
@@ -19,44 +27,6 @@ import re
 from pathlib import Path
 
 LOG = "[ComfyUI-Allma/lora_sniffer]"
-
-
-NAME_HINT_PATTERNS: list[tuple[str, str]] = [
-    (
-        r"\bvbvr\b",
-        "Prefers VBVR structure — the final prompt MUST use blocks "
-        "STARTING STATE / ACTION SEQUENCE (Step 1, Step 2, ...) / CAMERA / "
-        "CONSISTENCY instead of a flowing paragraph. Present tense throughout.",
-    ),
-    (
-        r"\breasoning\b",
-        "Structured-reasoning LoRA — prefer explicit numbered action beats "
-        "over a single flowing paragraph.",
-    ),
-    (
-        r"talking[_ -]?head|talkvid|celebvhq",
-        'Talking-head LoRA — use the exact format: [full visual description of '
-        'the subject and setting], speaking, saying: "the exact words". '
-        "Single character only.",
-    ),
-    (
-        r"\bi2v\b|image[_ -]?to[_ -]?video",
-        "Image-to-video LoRA — focus the prompt on MOTION and what happens "
-        "next; keep the restatement of the reference image brief.",
-    ),
-]
-
-
-def _detect_name_hints(name: str) -> list[str]:
-    """Look at the LoRA name for structural markers when the sidecar JSONs
-    are empty. Zero-friction alternative to manually editing metadata."""
-    if not name:
-        return []
-    found: list[str] = []
-    for pattern, hint in NAME_HINT_PATTERNS:
-        if re.search(pattern, name, re.IGNORECASE):
-            found.append(hint)
-    return found
 
 
 def _read_json(path: Path) -> dict:
@@ -79,12 +49,7 @@ _HTML_ENTITIES = {
 
 
 def _clean_description(raw: str, max_chars: int = 3500) -> str:
-    """Strip HTML, decode common entities, collapse whitespace, cap length.
-
-    LoRA Manager stores the Civitai model description verbatim as HTML in
-    `modelDescription`. Authors routinely put the required prompt structure,
-    format examples and trigger patterns in there, so we mine it — but we
-    also cap the length so a 25kB write-up doesn't blow the system prompt."""
+    """Strip HTML, decode common entities, collapse whitespace, cap length."""
     if not raw or not isinstance(raw, str):
         return ""
     text = _HTML_TAG_RE.sub(" ", raw)
@@ -218,9 +183,6 @@ def sniff_loras(model_obj) -> list[dict]:
         display_name = name or Path(path).stem
         file_name = entry.get("name") or Path(path).name
 
-        auto_hints = _detect_name_hints(display_name) + _detect_name_hints(file_name)
-        auto_hints = list(dict.fromkeys(auto_hints))
-
         out.append({
             "name": display_name,
             "file": file_name,
@@ -230,7 +192,6 @@ def sniff_loras(model_obj) -> list[dict]:
             "base_model": lm.get("base_model") or "",
             "usage_tips": lm.get("usage_tips") or "",
             "model_description": lm.get("model_description") or "",
-            "auto_hints": auto_hints,
             "internal_meta": _safetensors_internal(ss_meta),
         })
     return out
@@ -245,62 +206,54 @@ def _tips_to_text(tips) -> str:
 
 
 def _format_lora_entry(lora: dict) -> str:
-    """Render one LoRA into a multi-line entry that surfaces every signal
-    the LLM might act on: trigger words, structural hints (from name),
-    notes and usage_tips."""
+    """Render one LoRA as a labelled bundle of facts. No imperatives here —
+    the preset is where we tell the LLM how to react to this block."""
     name = lora.get("name") or lora.get("file") or "unknown"
-    trig = (lora.get("trigger_words") or "").strip()
-    header = f"  * {name}"
-    if trig:
-        header += f' — MUST include verbatim: "{trig}"'
-    lines = [header]
+    file_name = lora.get("file") or ""
+    lines = [f"  * name: {name}"]
+    if file_name and file_name != name:
+        lines.append(f"      file: {file_name}")
 
-    hints = lora.get("auto_hints") or []
-    if hints:
-        for h in hints:
-            lines.append(f"      - structural hint (inferred from name): {h}")
+    trig = (lora.get("trigger_words") or "").strip()
+    if trig:
+        lines.append(f"      trigger_words: {trig}")
 
     notes = (lora.get("notes") or "").strip()
     if notes:
-        lines.append(f"      - notes: {notes}")
+        lines.append(f"      notes: {notes}")
 
     tips = _tips_to_text(lora.get("usage_tips"))
     if tips:
-        lines.append(f"      - usage tips: {tips}")
+        lines.append(f"      usage_tips: {tips}")
 
     desc = (lora.get("model_description") or "").strip()
     if desc:
-        lines.append(
-            f"      - author description (mine this for required structure / "
-            f"format / trigger patterns): {desc}"
-        )
+        lines.append(f"      description: {desc}")
 
     return "\n".join(lines)
 
 
 def format_loras_for_prompt(loras: list[dict]) -> str:
-    """Compact but directive block that goes into the system prompt.
+    """Emit a plain, factual LoRA block for the system prompt.
 
-    We stop segregating LoRAs into "triggered" vs "style influence only" —
-    that soft framing caused the LLM to ignore LoRAs whose metadata JSONs
-    were empty even when the file name itself signalled structure (e.g.
-    "reasoning ... VBVR"). Now every LoRA lands in one imperative block,
-    with any trigger words / name-inferred hints / notes / tips exposed
-    side-by-side so nothing gets skipped.
-    """
+    The header is a short instruction telling the enhancer to actually read
+    the fields — trigger words, notes, tips and description — and factor
+    them into the final prompt. We don't hardcode format rules per LoRA
+    family here; if the LoRA needs a specific prompt structure, the author
+    almost always spells it out in the description or usage_tips. Trust
+    the LLM to extract that."""
     if not loras:
         return ""
-    lines = [
-        "ACTIVE LoRAs in this workflow — every entry below is authoritative. "
-        "Trigger words MUST appear verbatim in the final prompt. Structural "
-        "hints, notes, usage_tips AND the author description outrank the "
-        "preset's default structure — if the author description spells out a "
-        "specific prompt format (e.g. blocks like STARTING STATE / ACTION "
-        "SEQUENCE / CAMERA / CONSISTENCY), you MUST follow that format. "
-        "Read the entry's name carefully too — many LoRAs encode required "
-        "structure or format in the name itself (e.g. 'VBVR', 'reasoning', "
-        "'talking-head', 'i2v')."
-    ]
+    header = (
+        "The following LoRAs are active in this workflow. For each one, "
+        "read the fields (trigger_words, notes, usage_tips, description) "
+        "and take them into account when writing the final prompt. If a "
+        "LoRA's description or usage_tips specifies a required prompt "
+        "format, structure, or example, follow it. Any trigger_words "
+        "shown must appear verbatim in the output — they are literal tokens "
+        "the LoRA was trained on, not concepts to paraphrase."
+    )
+    lines = [header]
     for lora in loras:
         lines.append(_format_lora_entry(lora))
     return "\n".join(lines)
