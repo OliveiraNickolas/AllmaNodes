@@ -1,18 +1,18 @@
 """Read LoRA info from a MODEL that came through ComfyUI's LoRA loaders.
 
 We rely on the intercept module (`lora_intercept.install()`) — which tags each
-applied LoRA on `ModelPatcher.attachments["_allma_loras"]` with its filename
-and path — and then combine three sidecar formats to recover the trigger word
-and any prompt-format guidance the author left behind:
+applied LoRA on `ModelPatcher.attachments["_allma_loras"]` with its filename,
+path and strength — and then combine the available sources to recover the
+trigger word and any prompt-format guidance the author left behind:
 
-  1. `<name>.safetensors.rgthree-info.json` — has `trainedWords` (Civitai data
+  1. `lora_hints/<stem>.md`                 — user-written override inside the
+     plugin dir; when present it replaces everything below (see
+     `_load_curated_hints`).
+  2. `<name>.safetensors.rgthree-info.json` — has `trainedWords` (Civitai data
      fetched by rgthree; the most reliable source of trigger words).
-  2. `<name>.metadata.json`                 — LoRA Manager sidecar. Has
+  3. `<name>.metadata.json`                 — LoRA Manager sidecar. Has
      `trigger_words`, `notes`, `usage_tips` and the full Civitai model card
      body as HTML in `modelDescription`.
-  3. `attachments["lora_metadata"]`         — raw metadata dict from inside
-     the safetensors file. Rare, but occasionally holds `ss_tag_frequency`
-     or `ss_metadata`.
 
 We intentionally do NOT try to summarise, interpret or hardcode rules per
 LoRA family here. The philosophy is: hand the LLM the raw facts we have
@@ -148,7 +148,7 @@ def _rgthree_info(safetensors_path: str) -> dict:
     return {
         "trigger_words": trigger,
         "civitai_name": data.get("name") or "",
-        "description": (data.get("description") or "").strip(),
+        "description": _clean_description(data.get("description") or ""),
         "tags": data.get("tags") or [],
     }
 
@@ -223,18 +223,6 @@ def _load_curated_hints(safetensors_path: str) -> str:
     return ""
 
 
-def _safetensors_internal(meta: dict) -> dict:
-    """The safetensors' own metadata dict — occasionally holds tag frequencies."""
-    if not isinstance(meta, dict):
-        return {}
-    interesting = {}
-    for k in ("ss_output_name", "ss_tag_frequency", "modelspec.title", "modelspec.description"):
-        v = meta.get(k)
-        if v:
-            interesting[k] = v
-    return interesting
-
-
 def _list_from_attachments(model_obj) -> list[dict]:
     if model_obj is None:
         return []
@@ -254,13 +242,6 @@ def sniff_loras(model_obj) -> list[dict]:
         return []
     out: list[dict] = []
     seen: set[str] = set()
-    ss_meta = {}
-    try:
-        att = getattr(model_obj, "attachments", None)
-        if att:
-            ss_meta = att.get("lora_metadata") or {}
-    except Exception:
-        pass
     for entry in entries:
         path = entry["path"]
         if path in seen:
@@ -282,6 +263,7 @@ def sniff_loras(model_obj) -> list[dict]:
         out.append({
             "name": display_name,
             "file": file_name,
+            "strength": entry.get("strength"),
             "trigger_words": trigger,
             "notes": notes,
             "tags": lm.get("tags") or rg.get("tags") or [],
@@ -289,7 +271,6 @@ def sniff_loras(model_obj) -> list[dict]:
             "usage_tips": lm.get("usage_tips") or "",
             "model_description": lm.get("model_description") or "",
             "human_curated_hints": _load_curated_hints(path),
-            "internal_meta": _safetensors_internal(ss_meta),
         })
     return out
 
@@ -307,7 +288,11 @@ def _format_lora_entry(lora: dict) -> str:
     the preset is where we tell the LLM how to react to this block."""
     name = lora.get("name") or lora.get("file") or "unknown"
     file_name = lora.get("file") or ""
-    lines = [f"  * name: {name}"]
+    strength = lora.get("strength")
+    header = f"  * name: {name}"
+    if isinstance(strength, (int, float)):
+        header += f" (strength {strength:g})"
+    lines = [header]
     if file_name and file_name != name:
         lines.append(f"      file: {file_name}")
 
@@ -397,7 +382,9 @@ def format_loras_for_prompt(loras: list[dict]) -> str:
         "All three outrank any default format assumed by the base "
         "preset. Any trigger_words shown must appear verbatim in the "
         "output — they are literal tokens the LoRA was trained on, "
-        "not concepts to paraphrase."
+        "not concepts to paraphrase. A LoRA's strength shows how hard "
+        "it is applied: at low strength (<0.5) its guidance is a soft "
+        "preference; at 1.0+ follow it strictly."
     )
     lines = [header]
     for lora in loras:

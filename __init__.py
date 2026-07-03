@@ -6,6 +6,7 @@ Talks to the Allma backend (OpenAI-compatible) with two nodes:
 Plus preset CRUD via HTTP + JS extension for the preset buttons.
 """
 from .api.lora_intercept import install as _install_lora_intercept
+from .api.state import register_state_endpoints
 from .nodes.connectivity import AllmaConnectivity
 from .nodes.generate import AllmaGenerate
 from .nodes.load_image import AllmaLoadImage
@@ -34,6 +35,11 @@ try:
     register_preset_endpoints()
 except Exception as e:
     print(f"[ComfyUI-Allma] preset endpoints not registered: {e}")
+
+try:
+    register_state_endpoints()
+except Exception as e:
+    print(f"[ComfyUI-Allma] state endpoint not registered: {e}")
 
 __all__ = [
     "NODE_CLASS_MAPPINGS",

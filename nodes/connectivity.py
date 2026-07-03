@@ -1,5 +1,6 @@
 """AllmaConnectivity node — holds host/port + model + sampling in one place."""
 from ..api.allma_client import list_models
+from ..api.state import get_state, set_state
 
 _MODELS_CACHE: list[str] = []
 _MODELS_CACHE_HOST = ""
@@ -26,13 +27,19 @@ class AllmaConnectivity:
     @classmethod
     def INPUT_TYPES(cls):
         models = _fetch_models() or ["(allma offline — check host/port)"]
+        # New nodes default to whatever model was last actually used, so you
+        # don't have to re-pick it every time you drop the node into a new
+        # workflow. The JS extension covers the same-session case via
+        # GET /allma/state.
+        last = get_state().get("last_model")
+        model_opts = {"default": last} if last in models else {}
         return {
             "required": {
                 "host": ("STRING", {"default": "127.0.0.1"}),
                 "port": ("INT", {"default": 9000, "min": 1, "max": 65535}),
                 "timeout": ("INT", {"default": 120, "min": 5, "max": 3600,
                                      "tooltip": "Max seconds per request. Bump for slow first-time loads."}),
-                "model": (models, {}),
+                "model": (models, model_opts),
                 "temperature": ("FLOAT", {"default": 1.0, "min": 0.0, "max": 2.0, "step": 0.05}),
                 "top_p": ("FLOAT", {"default": 0.95, "min": 0.0, "max": 1.0, "step": 0.01}),
                 "top_k": ("INT", {"default": 20, "min": 0, "max": 500,
@@ -71,4 +78,6 @@ class AllmaConnectivity:
             "max_tokens": int(max_tokens),
             "seed": int(seed),
         }
+        if isinstance(model, str) and model and not model.startswith("("):
+            set_state(last_model=model)
         return (conn,)

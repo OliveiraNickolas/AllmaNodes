@@ -13,3 +13,5 @@ presets/*.json
 lora_hints/*.md
 lora_hints/*.txt
 !lora_hints/.gitkeep
+
+state.json

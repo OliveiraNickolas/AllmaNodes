@@ -28,7 +28,7 @@ def install() -> bool:
         print(f"{LOG} could not import ComfyUI internals: {e}")
         return False
 
-    def _tag(new_model, lora_name):
+    def _tag(new_model, lora_name, strength):
         if new_model is None:
             return
         try:
@@ -39,7 +39,7 @@ def install() -> bool:
             existing = new_model.attachments.get("_allma_loras", [])
         except Exception:
             existing = []
-        entry = {"name": lora_name, "path": path}
+        entry = {"name": lora_name, "path": path, "strength": float(strength)}
         new_model.set_attachments("_allma_loras", list(existing) + [entry])
 
     LoraLoader = getattr(_nodes, "LoraLoader", None)
@@ -51,7 +51,7 @@ def install() -> bool:
             try:
                 new_model = result[0] if isinstance(result, tuple) else None
                 if strength_model != 0.0:
-                    _tag(new_model, lora_name)
+                    _tag(new_model, lora_name, strength_model)
             except Exception as e:
                 print(f"{LOG} tag failed on LoraLoader: {e}")
             return result
@@ -72,7 +72,7 @@ def install() -> bool:
             try:
                 new_model = result[0] if isinstance(result, tuple) else result
                 if strength_model != 0.0:
-                    _tag(new_model, lora_name)
+                    _tag(new_model, lora_name, strength_model)
             except Exception as e:
                 print(f"{LOG} tag failed on LoraLoaderModelOnly: {e}")
             return result

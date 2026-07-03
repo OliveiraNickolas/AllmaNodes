@@ -79,7 +79,12 @@ class AllmaGenerate:
                 "image_2_meta": ("STRING", {"forceInput": True}),
                 "image_3": ("IMAGE",),
                 "image_3_meta": ("STRING", {"forceInput": True}),
-                "audio": ("AUDIO",),
+                "audio": ("AUDIO", {
+                    "tooltip": "EXPERIMENTAL — encodes the audio as WAV and sends it as an "
+                    "OpenAI 'input_audio' content part. Requires a backend model with "
+                    "audio input support (e.g. Qwen-Omni style); text/vision models "
+                    "like Qwen3.6 will reject or ignore it.",
+                }),
             },
         }
 
@@ -112,6 +117,15 @@ class AllmaGenerate:
     ):
         if not isinstance(connectivity, dict):
             raise RuntimeError("Missing connectivity input — connect AllmaConnectivity.")
+
+        model_name = connectivity.get("model") or ""
+        if not model_name or model_name.startswith("("):
+            raise RuntimeError(
+                "No valid model selected — Allma was offline when ComfyUI "
+                "started, so the model dropdown is empty. Start Allma "
+                "('allma serve') and restart ComfyUI (or refresh the browser) "
+                "to repopulate the list."
+            )
 
         # The `preset` widget is JS-only: selecting a preset in the dropdown
         # writes the preset's system_prompt into the system_prompt widget on

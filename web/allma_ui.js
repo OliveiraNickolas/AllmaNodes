@@ -88,6 +88,26 @@ function applyConnectivityVisibility(node) {
   if (app.canvas) app.canvas.setDirty(true, true);
 }
 
+async function applyLastModel(node) {
+  // Freshly added node (not a workflow load): default the model widget to
+  // the last model actually used, fetched live so it works within the same
+  // browser session (the Python-side INPUT_TYPES default only refreshes on
+  // page load).
+  if (node._allmaConfigured) return;
+  try {
+    const state = await fetch("/allma/state").then((r) => r.json());
+    const last = state?.last_model;
+    if (!last || node._allmaConfigured) return;
+    const w = widget(node, "model");
+    if (w && w.options?.values?.includes(last)) {
+      w.value = last;
+      node.setDirtyCanvas(true, true);
+    }
+  } catch (e) {
+    console.warn("[ComfyUI-Allma] could not fetch last model", e);
+  }
+}
+
 app.registerExtension({
   name: "allma.connectivity_ui",
   async beforeRegisterNodeDef(nodeType, nodeData) {
@@ -104,12 +124,18 @@ app.registerExtension({
           applyConnectivityVisibility(this);
         };
       }
-      setTimeout(() => applyConnectivityVisibility(this), 0);
+      setTimeout(() => {
+        applyConnectivityVisibility(this);
+        applyLastModel(this);
+      }, 0);
       return r;
     };
 
     const origConfigure = nodeType.prototype.onConfigure;
     nodeType.prototype.onConfigure = function () {
+      // Workflow load — the saved model value must win over the last-used
+      // default, so flag the node before applyLastModel's fetch resolves.
+      this._allmaConfigured = true;
       const r = origConfigure?.apply(this, arguments);
       setTimeout(() => applyConnectivityVisibility(this), 0);
       return r;
