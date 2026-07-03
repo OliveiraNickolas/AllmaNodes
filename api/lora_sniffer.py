@@ -382,9 +382,12 @@ def format_loras_for_prompt(loras: list[dict]) -> str:
         "All three outrank any default format assumed by the base "
         "preset. Any trigger_words shown must appear verbatim in the "
         "output — they are literal tokens the LoRA was trained on, "
-        "not concepts to paraphrase. A LoRA's strength shows how hard "
-        "it is applied: at low strength (<0.5) its guidance is a soft "
-        "preference; at 1.0+ follow it strictly."
+        "not concepts to paraphrase — UNLESS human_curated_hints "
+        "explicitly says to omit, avoid or replace them; the curated "
+        "hints are the workflow author's final word and win over every "
+        "other field, trigger_words included. A LoRA's strength shows "
+        "how hard it is applied: at low strength (<0.5) its guidance "
+        "is a soft preference; at 1.0+ follow it strictly."
     )
     lines = [header]
     for lora in loras:
