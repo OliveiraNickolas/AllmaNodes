@@ -15,3 +15,6 @@ lora_hints/*.txt
 !lora_hints/.gitkeep
 
 state.json
+
+# artefato deixado pelo 'comfy node publish'
+node.zip
