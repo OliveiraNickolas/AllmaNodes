@@ -16,7 +16,7 @@ import struct
 import zlib
 from pathlib import Path
 
-LOG = "[ComfyUI-Allma/meta]"
+LOG = "[AllmaNodes/meta]"
 
 PNG_MAGIC = b"\x89PNG\r\n\x1a\n"
 JPEG_MAGIC = b"\xff\xd8\xff"

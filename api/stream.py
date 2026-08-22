@@ -11,7 +11,7 @@ first, which keeps it feeling live without the traffic.
 """
 import time
 
-LOG = "[ComfyUI-Allma/stream]"
+LOG = "[AllmaNodes/stream]"
 EVENT = "allma.stream"
 
 FLUSH_CHARS = 160     # a sentence or so

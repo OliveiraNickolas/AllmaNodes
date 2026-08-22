@@ -129,7 +129,7 @@ human_curated_hints  >  format_hints_extracted_from_description  >  usage_tips  
 ### Writing a hint file
 
 ```
-ComfyUI-Allma/lora_hints/MyLora_v2.md
+AllmaNodes/lora_hints/MyLora_v2.md
 ```
 
 Free-form markdown/text — it's injected verbatim. Example:
@@ -182,7 +182,7 @@ silently returning nothing.
 
 ```bash
 cd ComfyUI/custom_nodes
-git clone https://github.com/nickolasarthur/ComfyUI-Allma
+git clone https://github.com/OliveiraNickolas/AllmaNodes
 ```
 
 Restart ComfyUI. No pip install needed — stdlib + torch/PIL only, which

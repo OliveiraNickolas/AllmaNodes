@@ -10,7 +10,7 @@ import json
 import re
 from pathlib import Path
 
-LOG = "[ComfyUI-Allma/presets]"
+LOG = "[AllmaNodes/presets]"
 
 PRESET_DIR = Path(__file__).resolve().parent.parent / "presets"
 PRESET_DIR.mkdir(exist_ok=True)

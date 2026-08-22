@@ -11,7 +11,7 @@ so that, after the original call, we append `{name, path, strength}` to a new
 attachment `attachments["_allma_loras"]` on the returned ModelPatcher. Runs
 once at import; idempotent.
 """
-LOG = "[ComfyUI-Allma/lora_intercept]"
+LOG = "[AllmaNodes/lora_intercept]"
 
 _PATCHED = False
 

@@ -21,7 +21,7 @@ import node_helpers
 
 from ..api.image_metadata import format_metadata_for_llm, read_image_metadata
 
-LOG = "[ComfyUI-Allma/load_image]"
+LOG = "[AllmaNodes/load_image]"
 
 
 def _image_files() -> list[str]:

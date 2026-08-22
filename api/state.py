@@ -6,7 +6,7 @@ best-effort — a corrupt or missing file just means defaults.
 import json
 from pathlib import Path
 
-LOG = "[ComfyUI-Allma/state]"
+LOG = "[AllmaNodes/state]"
 
 _STATE_FILE = Path(__file__).resolve().parent.parent / "state.json"
 

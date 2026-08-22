@@ -1,4 +1,4 @@
-"""ComfyUI-Allma
+"""AllmaNodes
 
 Talks to the Allma backend (OpenAI-compatible):
   - AllmaConnectivity: host/port/model/sampling
@@ -31,7 +31,7 @@ from .nodes.vram import AllmaClearVRAM
 try:
     _install_lora_intercept()
 except Exception as _e:
-    print(f"[ComfyUI-Allma] lora intercept not installed: {_e}")
+    print(f"[AllmaNodes] lora intercept not installed: {_e}")
 
 for _register, _label in (
     (register_preset_endpoints, "preset endpoints"),
@@ -41,7 +41,7 @@ for _register, _label in (
     try:
         _register()
     except Exception as _e:
-        print(f"[ComfyUI-Allma] {_label} not registered: {_e}")
+        print(f"[AllmaNodes] {_label} not registered: {_e}")
 
 WEB_DIRECTORY = "./web"
 

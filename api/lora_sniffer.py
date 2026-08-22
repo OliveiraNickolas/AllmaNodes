@@ -26,7 +26,7 @@ import json
 import re
 from pathlib import Path
 
-LOG = "[ComfyUI-Allma/lora_sniffer]"
+LOG = "[AllmaNodes/lora_sniffer]"
 
 # Where we look for user-written hint overrides. The directory lives inside
 # the plugin (not next to the LoRA files) so the user's models/loras stays
@@ -193,7 +193,7 @@ def _lora_manager_meta(safetensors_path: str) -> dict:
 
 
 def _load_curated_hints(safetensors_path: str) -> str:
-    """Look for a user-written override file in <ComfyUI-Allma>/lora_hints/.
+    """Look for a user-written override file in <AllmaNodes>/lora_hints/.
 
     We try three lookups in order and return the first that exists:
       1. `<stem>.md`                            (LTX2.3_reasoning_Sulphur.md)

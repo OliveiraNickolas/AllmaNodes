@@ -16,7 +16,7 @@ from comfy_api.latest import io
 
 from .preset import list_preset_names, load_preset
 
-LOG = "[ComfyUI-Allma/selectors]"
+LOG = "[AllmaNodes/selectors]"
 
 # The legacy wildcard. Declared as a custom io_type so the V3 schema emits the
 # bare "*" the validator special-cases.

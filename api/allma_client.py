@@ -13,7 +13,7 @@ import wave
 
 from .interrupt import clear_response, is_cancelled, register_response
 
-LOG = "[ComfyUI-Allma]"
+LOG = "[AllmaNodes]"
 
 
 class Cancelled(Exception):

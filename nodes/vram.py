@@ -26,7 +26,7 @@ from comfy_api.latest import io
 
 from .connectivity import AllmaConnectivityType
 
-LOG = "[ComfyUI-Allma/vram]"
+LOG = "[AllmaNodes/vram]"
 
 # A process is only ever signalled if its command line contains one of these.
 # Anything else on the GPU — ComfyUI included — is left strictly alone.

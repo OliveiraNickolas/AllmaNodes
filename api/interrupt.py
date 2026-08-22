@@ -15,7 +15,7 @@ read (which is what made timed-out requests pile up before).
 """
 import threading
 
-LOG = "[ComfyUI-Allma/interrupt]"
+LOG = "[AllmaNodes/interrupt]"
 
 _LOCK = threading.Lock()
 _CANCEL = threading.Event()

@@ -34,7 +34,7 @@ from ..api.image_metadata import (
 from .connectivity import AllmaConnectivityType
 from .preset import list_preset_names
 
-LOG = "[ComfyUI-Allma/generate]"
+LOG = "[AllmaNodes/generate]"
 
 MAX_IMAGES = 9
 MAX_AUDIOS = 3

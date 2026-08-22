@@ -10,7 +10,7 @@ produced; wire it to `output_prompt` to watch the answer.
 """
 from comfy_api.latest import io
 
-LOG = "[ComfyUI-Allma/live_text]"
+LOG = "[AllmaNodes/live_text]"
 
 
 class AllmaLiveText(io.ComfyNode):

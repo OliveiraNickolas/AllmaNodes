@@ -451,7 +451,7 @@ function applyConnectivityVisibility(node) {
   const showW = widget(node, "show_sampling");
   const show = showW?.value ?? false;
   console.log(
-    `[ComfyUI-Allma] AllmaConnectivity #${node.id}: show_sampling=${show}, `
+    `[AllmaNodes] AllmaConnectivity #${node.id}: show_sampling=${show}, `
       + `hiding=${SAMPLING_WIDGETS.filter((n) => widget(node, n)).length} widgets`,
   );
   for (const name of SAMPLING_WIDGETS) {
@@ -481,7 +481,7 @@ async function applyLastModel(node) {
       node.setDirtyCanvas(true, true);
     }
   } catch (e) {
-    console.warn("[ComfyUI-Allma] could not fetch last model", e);
+    console.warn("[AllmaNodes] could not fetch last model", e);
   }
 }
 
@@ -530,7 +530,7 @@ async function refreshPresetDropdown(node) {
     if (!values.includes(w.value)) w.value = "(none)";
     node.setDirtyCanvas(true, true);
   } catch (e) {
-    console.warn("[ComfyUI-Allma] refresh failed", e);
+    console.warn("[AllmaNodes] refresh failed", e);
   }
 }
 
