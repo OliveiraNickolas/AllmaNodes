@@ -1,0 +1,24 @@
+# Publica no Comfy Registry quando a versao muda.
+#
+# O segredo vive no GitHub (Settings -> Secrets and variables -> Actions), nunca
+# num terminal nem num arquivo local — a interface do GitHub e feita para receber
+# credencial, ela mascara na entrada e nao mostra de volta depois.
+#
+# O gatilho e o pyproject.toml porque o registry rejeita republicacao na mesma
+# versao; disparar em qualquer push so geraria falhas ruidosas.
+name: Publish to Comfy Registry
+
+on:
+  push:
+    branches: [main]
+    paths: [pyproject.toml]
+  workflow_dispatch:      # permite disparar na mao pela aba Actions
+
+jobs:
+  publish:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: Comfy-Org/publish-node-action@v1
+        with:
+          personal_access_token: ${{ secrets.REGISTRY_ACCESS_TOKEN }}
