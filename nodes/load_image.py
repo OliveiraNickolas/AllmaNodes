@@ -1,14 +1,19 @@
-"""AllmaLoadImage — same UX as the built-in LoadImage, but with an extra
-METADATA STRING output that reads the PNG/JPEG sidecar prompt info.
+"""AllmaLoadImage — same UX as the built-in LoadImage, but it also reads the
+PNG/JPEG sidecar prompt info.
 
 Use this instead of the stock `Load Image` when you want the LLM to see the
 generative history of the image (positive prompt, model, LoRAs, sampler…).
+
+AllmaGenerate no longer needs this node — it recovers metadata by walking the
+graph back to whichever loader supplied the picture, the stock Load Image
+included. This stays for when you want the metadata as text in the graph.
 """
 import hashlib
 import os
 
 import numpy as np
 import torch
+from comfy_api.latest import io
 from PIL import Image, ImageOps, ImageSequence
 
 import folder_paths
@@ -19,32 +24,55 @@ from ..api.image_metadata import format_metadata_for_llm, read_image_metadata
 LOG = "[ComfyUI-Allma/load_image]"
 
 
-class AllmaLoadImage:
+def _image_files() -> list[str]:
+    input_dir = folder_paths.get_input_directory()
+    try:
+        files = [
+            f for f in os.listdir(input_dir)
+            if os.path.isfile(os.path.join(input_dir, f))
+        ]
+        return sorted(folder_paths.filter_files_content_types(files, ["image"]))
+    except Exception:
+        return []
+
+
+class AllmaLoadImage(io.ComfyNode):
     """Load an image plus its embedded prompt metadata."""
 
     @classmethod
-    def INPUT_TYPES(cls):
-        input_dir = folder_paths.get_input_directory()
-        try:
-            files = [
-                f for f in os.listdir(input_dir)
-                if os.path.isfile(os.path.join(input_dir, f))
-            ]
-            files = folder_paths.filter_files_content_types(files, ["image"])
-        except Exception:
-            files = []
-        return {
-            "required": {
-                "image": (sorted(files), {"image_upload": True}),
-            }
-        }
+    def define_schema(cls):
+        return io.Schema(
+            node_id="AllmaLoadImage",
+            display_name="Allma Load Image",
+            category="Allma/utils",
+            description=(
+                "Load an image and expose the prompt metadata embedded in its "
+                "file as text."
+            ),
+            inputs=[
+                io.Combo.Input(
+                    "image",
+                    options=_image_files(),
+                    upload=io.UploadType.image,
+                ),
+            ],
+            outputs=[
+                io.Image.Output(display_name="image"),
+                io.Mask.Output(display_name="mask"),
+                io.String.Output(display_name="metadata"),
+            ],
+        )
 
-    CATEGORY = "Allma"
-    RETURN_TYPES = ("IMAGE", "MASK", "STRING")
-    RETURN_NAMES = ("image", "mask", "metadata")
-    FUNCTION = "load"
+    @classmethod
+    def fingerprint_inputs(cls, image, **_kwargs):
+        image_path = folder_paths.get_annotated_filepath(image)
+        m = hashlib.sha256()
+        with open(image_path, "rb") as f:
+            m.update(f.read())
+        return m.digest().hex()
 
-    def load(self, image):
+    @classmethod
+    def execute(cls, image) -> io.NodeOutput:
         image_path = folder_paths.get_annotated_filepath(image)
         try:
             meta = read_image_metadata(image_path)
@@ -82,18 +110,4 @@ class AllmaLoadImage:
 
         image_out = torch.cat(output_images, dim=0)
         mask_out = torch.cat(output_masks, dim=0)
-        return (image_out, mask_out, meta_str)
-
-    @classmethod
-    def IS_CHANGED(cls, image):
-        image_path = folder_paths.get_annotated_filepath(image)
-        m = hashlib.sha256()
-        with open(image_path, "rb") as f:
-            m.update(f.read())
-        return m.digest().hex()
-
-    @classmethod
-    def VALIDATE_INPUTS(cls, image):
-        if not folder_paths.exists_annotated_filepath(image):
-            return f"Invalid image file: {image}"
-        return True
+        return io.NodeOutput(image_out, mask_out, meta_str)

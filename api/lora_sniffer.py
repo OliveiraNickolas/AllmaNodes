@@ -330,6 +330,23 @@ def _format_lora_entry(lora: dict) -> str:
     return "\n".join(lines)
 
 
+# A trigger is vocabulary, not metadata. Without this, models dutifully obey
+# "include verbatim" by announcing the token — "her anatomy is defined by the
+# inniepussy trigger word" — which is meaningless to an image or video model
+# and pollutes the prompt with tooling jargon.
+_TRIGGER_PROSE_RULE = (
+    "A trigger is vocabulary, not metadata: it must read as ordinary "
+    "description. NEVER write the words 'trigger', 'trigger word', 'token', "
+    "'keyword', 'activated by', 'defined by' or 'using the X trigger' in the "
+    "output, and never explain that a term came from a LoRA — the downstream "
+    "model has no idea what a LoRA is and treats such phrasing as literal "
+    "scene content. Write 'her inner labia protrude slightly from a soft "
+    "cleft', not 'she displays inniepussy'. If a trigger cannot be placed "
+    "naturally without describing something the brief never asked for, leave "
+    "it out entirely — a forced trigger costs more than a missing one."
+)
+
+
 def format_triggers_only(loras: list[dict]) -> str:
     """Minimal block that only surfaces trigger words.
 
@@ -352,7 +369,9 @@ def format_triggers_only(loras: list[dict]) -> str:
         return ""
     header = (
         "Active LoRA trigger words. These are literal tokens the LoRAs "
-        "were trained on — include them verbatim in the final prompt."
+        "were trained on — spell them exactly as shown in the final prompt, "
+        "woven into the description at the point where the thing they name "
+        "is on screen. " + _TRIGGER_PROSE_RULE
     )
     return header + "\n" + "\n".join(lines)
 
@@ -387,7 +406,7 @@ def format_loras_for_prompt(loras: list[dict]) -> str:
         "hints are the workflow author's final word and win over every "
         "other field, trigger_words included. A LoRA's strength shows "
         "how hard it is applied: at low strength (<0.5) its guidance "
-        "is a soft preference; at 1.0+ follow it strictly."
+        "is a soft preference; at 1.0+ follow it strictly. " + _TRIGGER_PROSE_RULE
     )
     lines = [header]
     for lora in loras:

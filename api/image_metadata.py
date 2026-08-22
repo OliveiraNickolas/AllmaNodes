@@ -119,13 +119,55 @@ def parse_comfyui_workflow(graph_json: str) -> dict:
     def _widgets(entry):
         return entry.get("inputs", {}).get("__widgets__") or []
 
+    # Class names vary wildly in punctuation between packs — "Power Lora Loader
+    # (rgthree)" vs "LoraLoaderModelOnly". Match on letters only.
+    def _norm(name: str) -> str:
+        return re.sub(r"[^a-z0-9]", "", (name or "").lower())
+
+    # Prompt text is usually NOT a literal on the encoder: it arrives through a
+    # link, e.g. CLIPTextEncode.text = ["143", 0] -> Any Switch -> Primitive.
+    # Walk the graph until an actual string turns up.
+    _TEXT_FIELDS = ("value", "text", "string", "prompt", "str")
+
+    def _resolve_text(value, _seen=None, _depth=0):
+        if isinstance(value, str):
+            return value
+        if _depth > 12 or not isinstance(value, (list, tuple)) or not value:
+            return ""
+        node_id = str(value[0])
+        _seen = _seen or set()
+        if node_id in _seen:
+            return ""
+        _seen.add(node_id)
+        target = nodes.get(node_id)
+        if not isinstance(target, dict):
+            return ""
+        t_in = target.get("inputs", {}) or {}
+        # a literal on a known text field wins
+        for f in _TEXT_FIELDS:
+            v = t_in.get(f)
+            if isinstance(v, str) and v.strip():
+                return v
+        # UI-format nodes keep their value in widgets_values
+        for w in _widgets(target):
+            if isinstance(w, str) and w.strip():
+                return w
+        # otherwise keep following links (switches, reroutes, concat nodes…)
+        for v in t_in.values():
+            if isinstance(v, (list, tuple)) and v:
+                got = _resolve_text(v, _seen, _depth + 1)
+                if got.strip():
+                    return got
+        return ""
+
     for key, entry in nodes.items():
         ct = entry.get("class_type", "") or ""
         class_types.append(ct)
         inp = entry.get("inputs", {}) or {}
-        low = ct.lower()
+        low = _norm(ct)
 
-        if "checkpointloader" in low or "unetloader" in low or "diffusionloader" in low:
+        if ("checkpointloader" in low or "unetloader" in low
+                or "diffusionmodelloader" in low or "diffusionloader" in low):
             name = inp.get("ckpt_name") or inp.get("unet_name") or inp.get("model_name")
             if not name:
                 w = _widgets(entry)
@@ -135,19 +177,33 @@ def parse_comfyui_workflow(graph_json: str) -> dict:
                 model_names.append(str(name))
 
         elif "cliptextencode" in low or "textencode" in low or "conditioning" in low and "text" in low:
-            text = inp.get("text") or inp.get("prompt") or ""
+            text = _resolve_text(inp.get("text") or inp.get("prompt") or "")
             if not text:
                 w = _widgets(entry)
                 if w and isinstance(w[0], str):
                     text = w[0]
             if isinstance(text, str) and text.strip():
-                title = (entry.get("title") or "").lower()
+                title = (entry.get("title") or entry.get("_meta", {}).get("title") or "").lower()
                 if "neg" in title or "negative" in low:
                     negative.append(text.strip())
                 else:
                     positive.append(text.strip())
 
-        elif "loraload" in low or "loraloader" in low or "powerlora" in low or "lora_stack" in low:
+        elif "loraloader" in low or "powerlora" in low or "lorastack" in low:
+            # rgthree's Power Lora Loader keeps one dict per slot:
+            # lora_N = {"on": bool, "lora": path, "strength": float}
+            slot_hits = 0
+            for k, v in inp.items():
+                if not (isinstance(v, dict) and "lora" in v):
+                    continue
+                slot_hits += 1
+                if v.get("on") is False:
+                    continue  # disabled slot never touched the image
+                loras.append({"name": str(v.get("lora")),
+                              "strength": v.get("strength")})
+            if slot_hits:
+                continue
+
             name = inp.get("lora_name") or inp.get("name")
             strength = inp.get("strength_model") or inp.get("strength") or inp.get("lora_strength")
             if not name:
@@ -184,6 +240,17 @@ def parse_comfyui_workflow(graph_json: str) -> dict:
                     if len(w) >= 6:
                         scheduler = scheduler or (w[5] if isinstance(w[5], str) else None)
             bits = []
+            # Any of these can be a link rather than a literal; a raw
+            # ["147", 0] in the summary is noise the LLM would have to ignore.
+            if isinstance(sampler, (list, tuple)):
+                sampler = _resolve_text(sampler)
+            if isinstance(scheduler, (list, tuple)):
+                scheduler = _resolve_text(scheduler)
+            if isinstance(steps, (list, tuple)) or isinstance(cfg, (list, tuple)):
+                steps = None if isinstance(steps, (list, tuple)) else steps
+                cfg = None if isinstance(cfg, (list, tuple)) else cfg
+            if isinstance(seed, (list, tuple)):
+                seed = None
             if sampler:
                 bits.append(str(sampler))
             if scheduler:

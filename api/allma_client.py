@@ -11,7 +11,18 @@ import urllib.error
 import urllib.request
 import wave
 
+from .interrupt import clear_response, is_cancelled, register_response
+
 LOG = "[ComfyUI-Allma]"
+
+
+class Cancelled(Exception):
+    """Raised internally when the stop button fires. Carries partial output."""
+
+    def __init__(self, content: str = "", thinking: str = ""):
+        super().__init__("generation interrupted")
+        self.content = content
+        self.thinking = thinking
 
 
 def _url(host: str, port: int, path: str) -> str:
@@ -93,12 +104,24 @@ def build_user_content(
     audio_format: str,
 ) -> list[dict] | str:
     """Assemble OpenAI-style multimodal content array. Returns a plain string when
-    there are no attachments (some backends prefer the simpler form)."""
+    there are no attachments (some backends prefer the simpler form).
+
+    Each image is preceded by a short text part. This is not cosmetic: with
+    llama.cpp b10433 and a Qwen3-VL mmproj, ADJACENT image parts collapse in
+    pairs — send four and the model receives two, send six and it receives
+    three, silently. Measured by sending numbered colour swatches and asking
+    the model to name them back: consecutive images returned every other one,
+    while the same images separated by any text part all arrived.
+
+    The label doubles as the numbering the prompts rely on, so "Image 3" in a
+    system prompt now points at the picture the model actually saw.
+    """
     parts: list[dict] = []
     if text:
         parts.append({"type": "text", "text": text})
-    for url in image_data_urls:
+    for idx, url in enumerate(image_data_urls, start=1):
         if url:
+            parts.append({"type": "text", "text": f"Image {idx}:"})
             parts.append({"type": "image_url", "image_url": {"url": url}})
     if audio_b64:
         parts.append(
@@ -109,6 +132,71 @@ def build_user_content(
     if len(parts) == 1 and parts[0]["type"] == "text":
         return parts[0]["text"]
     return parts
+
+
+def _consume_stream(r, relay=None) -> tuple[str, str, str]:
+    """Read an OpenAI-style SSE stream → (content, thinking, finish_reason).
+
+    Checks the cancel token between chunks. On stop, raises Cancelled carrying
+    whatever was produced so far, so the node can still return partial text.
+
+    `relay`, when given, receives each piece as it arrives so the UI can show
+    the reasoning live instead of only after the answer lands.
+    """
+    content_parts: list[str] = []
+    think_parts: list[str] = []
+    finish_reason = ""
+
+    def _partial() -> tuple[str, str]:
+        return "".join(content_parts), "".join(think_parts)
+
+    try:
+        for raw in r:
+            if is_cancelled():
+                c, t = _partial()
+                raise Cancelled(c, t)
+            line = raw.decode("utf-8", errors="replace").strip()
+            if not line or not line.startswith("data:"):
+                continue
+            payload = line[5:].strip()
+            if payload == "[DONE]":
+                break
+            try:
+                chunk = json.loads(payload)
+            except json.JSONDecodeError:
+                continue
+            choices = chunk.get("choices") or []
+            if not choices:
+                continue
+            choice = choices[0]
+            delta = choice.get("delta") or {}
+            piece = delta.get("content")
+            if piece:
+                content_parts.append(piece)
+                if relay is not None:
+                    relay.add(piece, "content")
+            reasoning = delta.get("reasoning_content") or delta.get("reasoning")
+            if reasoning:
+                think_parts.append(reasoning)
+                if relay is not None:
+                    relay.add(reasoning, "reasoning")
+            if choice.get("finish_reason"):
+                finish_reason = str(choice["finish_reason"]).lower()
+    except Cancelled:
+        raise
+    except Exception:
+        # A read that blows up right after the stop button is the socket being
+        # closed under us on purpose — treat it as a clean cancel, not an error.
+        if is_cancelled():
+            c, t = _partial()
+            raise Cancelled(c, t) from None
+        raise
+
+    if is_cancelled():
+        c, t = _partial()
+        raise Cancelled(c, t)
+
+    return "".join(content_parts), "".join(think_parts), finish_reason
 
 
 def chat_completion(
@@ -126,8 +214,13 @@ def chat_completion(
     enable_thinking: bool = False,
     retry_on_loading: bool = True,
     max_retries: int = 40,
-) -> tuple[str, str]:
-    """POST /v1/chat/completions. Returns (content, thinking).
+    relay=None,
+) -> tuple[str, str, str]:
+    """POST /v1/chat/completions. Returns (content, thinking, status).
+
+    `status` is a human-readable note about anything that went wrong (e.g. the
+    answer was truncated). It is deliberately kept OUT of `content` so callers
+    never emit a diagnostic where a prompt is expected — empty means clean run.
 
     When enable_thinking is False, we ask the chat template to skip the
     <think>...</think> block via chat_template_kwargs; Qwen3-style models
@@ -148,7 +241,11 @@ def chat_completion(
         "temperature": float(temperature),
         "top_p": float(top_p),
         "max_tokens": int(max_tokens),
-        "stream": False,
+        # Streaming is what makes the stop button possible: we get control back
+        # between chunks. It also turns `timeout` into an inactivity timeout
+        # (per socket read) instead of a deadline for the whole answer, so a
+        # long-but-progressing generation no longer dies at the 120s mark.
+        "stream": True,
     }
     if top_k > 0:
         body["top_k"] = int(top_k)
@@ -172,16 +269,13 @@ def chat_completion(
     for attempt in range(max_retries):
         try:
             with urllib.request.urlopen(req, timeout=timeout) as r:
-                resp = json.load(r)
-            choice = resp["choices"][0]
-            msg = choice["message"]
-            finish_reason = (choice.get("finish_reason") or "").lower()
-            content = (msg.get("content") or "").strip()
-            thinking = (
-                msg.get("reasoning_content")
-                or msg.get("reasoning")
-                or ""
-            ).strip()
+                register_response(r)
+                try:
+                    content, thinking, finish_reason = _consume_stream(r, relay)
+                finally:
+                    clear_response()
+            content = content.strip()
+            thinking = thinking.strip()
             if not content and thinking:
                 if "</think>" in thinking:
                     parts = thinking.rsplit("</think>", 1)
@@ -189,16 +283,34 @@ def chat_completion(
                     if tail:
                         content = tail
                         thinking = thinking.replace("<think>", "", 1).strip()
-            if not content and thinking and finish_reason == "length":
-                warn = (
-                    f"[allma: response cut off — max_tokens={max_tokens} was "
-                    f"exhausted mid-thinking. Fix: turn 'thinking' OFF, or raise "
-                    f"max_tokens to 4096+, or reset sampling to Qwen3 official "
-                    f"thinking-mode (temperature=1.0, top_p=0.95, top_k=20).]"
-                )
-                print(f"{LOG} ⚠ {warn}")
-                content = warn
-            return content, thinking
+            # Logged on every run: when an answer comes back clipped, the split
+            # between the two channels and the finish_reason are what tell a
+            # real truncation apart from text that merely landed in 'thinking'.
+            print(
+                f"{LOG} finish_reason={finish_reason or 'stop'} "
+                f"content={len(content)} chars  reasoning={len(thinking)} chars"
+            )
+
+            status = ""
+            if finish_reason == "length":
+                if not content and thinking:
+                    status = (
+                        f"response cut off — max_tokens={max_tokens} was exhausted "
+                        f"mid-thinking, so no answer was ever produced. Fix: turn "
+                        f"'thinking' OFF, or raise max_tokens to 4096+, or reset "
+                        f"sampling to Qwen3 official thinking-mode "
+                        f"(temperature=1.0, top_p=0.95, top_k=20)."
+                    )
+                else:
+                    status = (
+                        f"response truncated — max_tokens={max_tokens} was reached. "
+                        f"The text below is incomplete."
+                    )
+                print(f"{LOG} ⚠ {status}")
+            return content, thinking, status
+        except Cancelled:
+            # Deliberate stop — must not be retried nor wrapped as a failure.
+            raise
         except urllib.error.HTTPError as e:
             body_text = ""
             try:
@@ -221,4 +333,4 @@ def chat_completion(
         f"Backend never became ready after {max_retries} retries: {last_err}"
     )
     # Unreachable; keeps type checkers happy about the return type.
-    return "", ""
+    return "", "", ""

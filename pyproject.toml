@@ -1,14 +1,14 @@
 [project]
-name = "comfyui-allma"
-description = "ComfyUI custom nodes for the Allma LLM backend (OpenAI-compatible). Multi-image, audio, LoRA sniffer, presets."
+name = "comfyui-allmanodes"
+description = "General-purpose ComfyUI nodes: an LLM prompt enhancer for the Allma backend (multi-image, audio, LoRA metadata, presets), plus graph utilities — a universal null gate, a VRAM unloader, and a combo mirror."
 version = "0.1.0"
 license = { file = "LICENSE" }
 dependencies = []
 
 [project.urls]
-Repository = "https://github.com/nickolasarthur/ComfyUI-Allma"
+Repository = "https://github.com/OliveiraNickolas/AllmaNodes"
 
 [tool.comfy]
-PublisherId = "nickolasarthur"
-DisplayName = "ComfyUI-Allma"
+PublisherId = "allma-lab"
+DisplayName = "Allma Nodes"
 Icon = ""

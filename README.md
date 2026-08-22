@@ -1,12 +1,40 @@
-# ComfyUI-Allma
+# Allma Nodes
 
-Custom nodes for wiring [ComfyUI](https://github.com/comfyanonymous/ComfyUI) to the [Allma](https://github.com/nickolasarthur/allma) LLM backend (or any OpenAI-compatible endpoint).
+General-purpose custom nodes for [ComfyUI](https://github.com/comfyanonymous/ComfyUI).
 
-One purpose: send a prompt (plus reference images, image metadata, and the
-LoRAs active in your workflow) to a local LLM and get engineered prompt text
-back into your graph — with the LLM fully aware of what your workflow is doing.
+The pack started as a prompt enhancer for the [Allma](https://github.com/OliveiraNickolas/allma)
+LLM backend (or any OpenAI-compatible endpoint) and grew into a small toolbox.
+Two groups, independent of each other:
+
+**LLM** (`Allma/llm`) — send a prompt, plus reference images, image metadata and
+the LoRAs active in your workflow, to a local model and get engineered prompt
+text back into your graph, with the model aware of what the workflow is doing.
+
+**Graph utilities** (`Allma/utils`, `Allma/logic`) — no LLM involved. A universal
+null gate for switching branches off at runtime, a VRAM unloader, and a combo
+that mirrors whatever dropdown you wire it into.
 
 ## Nodes
+
+### `Allma Gate (null when off)`
+Passes its input through when `enabled` is ON, and emits **null** when OFF.
+Works with any type — one node for images, audio, latents, conditioning, models.
+
+Bypassing or muting a node changes the *graph*, which is frozen the moment you
+queue. A boolean changes a *value*. That is why no combination of built-in nodes
+turns a slot off at runtime: `ExecutionBlocker` kills the whole consuming node
+rather than skipping one input, and `ComfySwitchNode` needs both branches wired
+with nothing native that produces "nothing".
+
+This node emits `None` instead, which any node with an *optional* input already
+handles — `MiniMaxH3ReferenceToVideo`, for instance, does `if img is None:
+continue` and simply ignores that slot.
+
+The input is lazy on purpose: with the gate OFF, nothing upstream of it runs at
+all. An unused image slot's resize is skipped, not computed and discarded.
+
+> Only wire the output into inputs declared `optional`. A node that assumes a
+> value is present will raise on null, and the error will point at that node.
 
 ### `Allma Connectivity`
 Says *how* to reach the backend and *how* to sample.
