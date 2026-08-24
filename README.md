@@ -30,6 +30,7 @@ utilities do not depend on it at all.
 | [Clear Allma VRAM](#clear-allma-vram) | `Allma/utils` | unloads the model so another job can have the card |
 | [Combo Select (universal)](#combo-select-universal) | `Allma/utils` | a dropdown that becomes a copy of whichever it is wired to |
 | [Allma Muter (false = mute)](#allma-muter-false--mute) | `Allma/logic` | one node mutes up to ten branches, with a master switch |
+| [Allma Bypasser (false = bypass)](#allma-bypasser-false--bypass) | `Allma/logic` | the same, stepping over a stage instead of removing it |
 | [Allma Bus In / Out](#allma-bus-in--out) | `Allma/bus` | many wires down one line, unpacked under the same names |
 
 ---
@@ -234,6 +235,22 @@ cannot be known in time, and the last clicked state is used instead.
 
 > Nodes you muted by hand are never woken up again by the muter. Only the ones it
 > put to sleep come back.
+
+---
+
+### Allma Bypasser (false = bypass)
+
+Identical to the muter — same slots, same master, same wiring — except a branch
+switched off is **bypassed** rather than muted.
+
+The difference is what happens to the chain. Muting takes the node out of the
+graph, so whatever it fed sees an unconnected input: right for a branch that
+should simply not be there, like a reference image you are leaving out of this
+run. Bypassing leaves the node in place and passes its input straight to its
+output, so the chain stays whole: right for a stage you are stepping over, like
+an upscaler in the middle of a pipeline that still has to hand its frames on.
+
+Everything else in the muter's section applies here unchanged.
 
 ---
 

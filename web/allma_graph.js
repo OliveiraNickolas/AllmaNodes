@@ -54,6 +54,14 @@ export function* allNodes(graph, seen = new Set()) {
  * workflow can be edited between calls and a stale map would resolve to a node
  * that no longer exists.
  */
+export function rootGraph() {
+  // app.graph is the graph currently OPEN on screen, which becomes the subgraph
+  // the moment you step into one. Anything that walks the whole workflow — or
+  // needs to climb out of a subgraph — has to start from the real root, or it
+  // silently sees a fragment and draws the wrong conclusions from it.
+  return app?.rootGraph || app?.graph?.rootGraph || app?.graph;
+}
+
 function parentMap(root, map = new Map(), seen = new Set()) {
   if (!root || seen.has(root)) return map;
   seen.add(root);
@@ -83,7 +91,7 @@ export function resolveUpstream(node, inputName) {
   if (!link) return null;
   let prefix = "";
 
-  const parents = parentMap(app?.graph);
+  const parents = parentMap(rootGraph());
 
   for (let hop = 0; hop < 16; hop++) {
     // A negative origin is the subgraph's input proxy: the real source is one
@@ -175,7 +183,7 @@ export function literalFrom(node, inputName, depth = 0) {
 
   let graph = node.graph;
   let link = getLink(graph, input.link);
-  const parents = parentMap(app?.graph);
+  const parents = parentMap(rootGraph());
 
   for (let hop = 0; hop < 16; hop++) {
     if (!link) return undefined;
@@ -218,6 +226,40 @@ export function literalFrom(node, inputName, depth = 0) {
     return w.value;
   }
   return undefined;
+}
+
+/** The widget on a containing node that a promoted input is driven by.
+ *
+ * Promoting a widget out of a subgraph makes two things: a link from the input
+ * proxy to the inner node, and a widget on the containing node. The inner widget
+ * becomes a passenger — writing to it changes nothing anyone can see, because
+ * the parent's widget is the one being read and drawn.
+ *
+ * So anything that wants a promoted control to MOVE has to write the parent's
+ * widget. This finds it, climbing as many levels as the promotion goes.
+ */
+export function promotedWidget(node, inputName) {
+  const input = (node.inputs || []).find((i) => i.name === inputName);
+  if (!input || input.link == null) return null;
+
+  let graph = node.graph;
+  let link = getLink(graph, input.link);
+  const parents = parentMap(rootGraph());
+
+  for (let hop = 0; hop < 16; hop++) {
+    if (!link || link.origin_id >= 0) return null;  // not a promotion
+    const up = parents.get(graph);
+    if (!up) return null;
+    const slot = (up.node.inputs || [])[link.origin_slot];
+    if (!slot) return null;
+    if (slot.link == null) {
+      // End of the chain: the parent holds the widget being drawn.
+      return (up.node.widgets || []).find((w) => w.name === slot.name) || null;
+    }
+    graph = up.graph;
+    link = getLink(graph, slot.link);
+  }
+  return null;
 }
 
 /** Everything upstream of one input that feeds NOTHING ELSE.

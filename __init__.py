@@ -8,6 +8,7 @@ Talks to the Allma backend (OpenAI-compatible):
   - AllmaPresetPrompt: preset name → the preset's system prompt
   - AllmaBusIn/Out:    many wires into one, unpacked under the same names
   - AllmaMuter:        one boolean mutes the whole branch feeding it
+  - AllmaBypasser:     the same, but bypassing instead of muting
   - AllmaGate:         deprecated id kept so old workflows still load
   - AllmaStop:         a stop button placeable away from the Generate node
 Plus preset CRUD over HTTP and a JS extension for the inline controls.
@@ -25,7 +26,7 @@ from .api.reconnect import register_reconnect_endpoint
 from .api.state import register_state_endpoints
 from .nodes.bus import AllmaBusIn, AllmaBusOut
 from .nodes.connectivity import AllmaConnectivity
-from .nodes.gate import AllmaGate, AllmaMuter
+from .nodes.gate import AllmaBypasser, AllmaGate, AllmaMuter
 from .nodes.generate import AllmaGenerate
 from .nodes.live_text import AllmaLiveText
 from .nodes.load_image import AllmaLoadImage
@@ -59,6 +60,7 @@ class AllmaExtension(ComfyExtension):
             AllmaConnectivity,
             AllmaGenerate,
             AllmaMuter,
+            AllmaBypasser,
             AllmaGate,
             AllmaLoadImage,
             AllmaLiveText,

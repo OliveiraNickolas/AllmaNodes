@@ -57,6 +57,17 @@ function linkInputs(node) {
  * The seed is what makes this usable: a slot arrives already labelled with
  * whatever was plugged into it, and the panel is only for when that name is not
  * good enough — "MODEL" becoming "Speed Lora". */
+/** Push the current names onto the slots and the receiving node. */
+function applyNames(node) {
+  const slots = linkInputs(node);
+  slots.forEach((inp, i) => {
+    const w = nameWidget(node, i);
+    inp.label = w?.value ? String(w.value) : undefined;
+  });
+  node.setDirtyCanvas(true, true);
+  mirrorConsumers(node.graph);
+}
+
 function syncProps(node) {
   const slots = linkInputs(node);
   const collapsed = isCollapsed(node);
@@ -214,23 +225,34 @@ app.registerExtension({
         // node.widgets, so this is the only place they survive.
         node._allmaNameWidgets = (node.widgets || [])
           .filter((w) => String(w.name).startsWith(PROP_PREFIX));
+        // Callback plus a poll, never Object.defineProperty.
+        //
+        // Intercepting `value` caught every write — including the Parameters
+        // panel, which sets it directly and fires no callback — but it also took
+        // the property away from Vue, and Nodes 2.0 renders these fields
+        // reactively. The value would be right while the box on screen showed
+        // something else. Anything visible has to leave `value` alone.
         for (const w of node.widgets || []) {
           if (!String(w.name).startsWith(PROP_PREFIX)) continue;
-          let stored = w.value;
-          Object.defineProperty(w, "value", {
-            configurable: true,
-            enumerable: true,
-            get: () => stored,
-            set: (v) => {
-              stored = v;
-              const i = parseInt(String(w.name).slice(PROP_PREFIX.length), 10) - 1;
-              const inp = linkInputs(node)[i];
-              if (inp) inp.label = v ? String(v) : undefined;
-              node.setDirtyCanvas(true, true);
-              mirrorConsumers(node.graph);
-            },
-          });
+          const orig = w.callback;
+          w.callback = function (...args) {
+            const out = orig?.apply(this, args);
+            applyNames(node);
+            return out;
+          };
         }
+        // The panel writes silently, so the names are re-read on a timer and
+        // pushed onward only when one actually changed.
+        if (!node._allmaNameTimer) {
+          node._allmaNameTimer = setInterval(() => {
+            if (!node.graph) { clearInterval(node._allmaNameTimer); node._allmaNameTimer = null; return; }
+            const key = namesOf(node).join("\u0000");
+            if (key === node._allmaNameKey) return;
+            node._allmaNameKey = key;
+            applyNames(node);
+          }, 400);
+        }
+
         setTimeout(() => syncProps(node), 0);
         return r;
       };

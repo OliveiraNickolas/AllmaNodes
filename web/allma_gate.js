@@ -1,5 +1,5 @@
 import { app } from "../../scripts/app.js";
-import { exclusiveUpstream, resolveUpstream, allNodes, literalFrom } from "./allma_graph.js";
+import { exclusiveUpstream, resolveUpstream, allNodes, literalFrom, rootGraph, promotedWidget } from "./allma_graph.js";
 
 /* Allma Gate — switching it off mutes the branch behind it.
  *
@@ -19,9 +19,20 @@ import { exclusiveUpstream, resolveUpstream, allNodes, literalFrom } from "./all
  */
 
 const NODE = "AllmaMuter";
+const BYPASS_NODE = "AllmaBypasser";
 const OLD_NODE = "AllmaGate";
 const MODE_ALWAYS = 0;
-const MODE_NEVER = 2; // litegraph's "mute"
+const MODE_NEVER = 2;  // litegraph's "mute"
+const MODE_BYPASS = 4; // litegraph's "bypass"
+
+/** Every node type this extension drives. */
+const OURS = [NODE, BYPASS_NODE, OLD_NODE];
+
+/** Muting removes a node from the graph; bypassing keeps it and passes its
+ *  input through. Same machinery, one different number. */
+function offMode(node) {
+  return node.type === BYPASS_NODE ? MODE_BYPASS : MODE_NEVER;
+}
 
 
 /** The branch slots only.
@@ -47,14 +58,26 @@ function litValue(node, name) {
   return typeof v === "boolean" ? v : undefined;
 }
 
+/** Is this input actually fed by a wire? */
+function isWired(node, name) {
+  const inp = (node.inputs || []).find((x) => x.name === name);
+  return !!inp && inp.link != null;
+}
+
 function branchOn(node, i) {
-  const wired = litValue(node, "enabled");
-  const master = wired !== undefined
-    ? wired
-    : node.widgets?.find((w) => w.name === "enabled")?.value !== false;
-  if (!master) return false;
+  // The per-branch toggle is the truth. Toggle All is a bulk COMMAND — clicking
+  // it writes every branch — not a gate over them, or turning one branch back on
+  // would do nothing while it read OFF, and the node would show a state it was
+  // not in.
   const own = litValue(node, `on_${i + 1}`);
-  return own !== undefined ? own : toggleFor(node, i)?.value !== false;
+  const branch = own !== undefined ? own : toggleFor(node, i)?.value !== false;
+
+  // The master never gates, wired or not — it commands, and the branch toggle is
+  // always the truth. A wired master is cascaded onto the toggles the moment its
+  // value changes (see the poller), so by the time this is read the branches
+  // already carry it. Gating on top of that would freeze the individual toggles:
+  // flipping one back on under a master reading OFF would do nothing.
+  return branch;
 }
 
 /** The node a slot points at, plus everything feeding only that node.
@@ -75,7 +98,7 @@ function branchNodes(node, inputName) {
   const out = [target];
   for (const inp of target.inputs || []) {
     if (inp.link == null) continue;
-    for (const n of exclusiveUpstream(target, inp.name, [NODE, OLD_NODE])) {
+    for (const n of exclusiveUpstream(target, inp.name, OURS)) {
       if (!out.includes(n)) out.push(n);
     }
   }
@@ -96,7 +119,7 @@ function applyBranchMode(node) {
       // to sleep are woken again, tracked by a mark on the node itself.
       if (on && !n._allmaMutedBy) continue;
       if (!on && n.mode !== MODE_ALWAYS && !n._allmaMutedBy) continue;
-      n.mode = on ? MODE_ALWAYS : MODE_NEVER;
+      n.mode = on ? MODE_ALWAYS : offMode(node);
       n._allmaMutedBy = on ? null : node.id;
       if (on) restored++; else muted++;
     }
@@ -104,11 +127,32 @@ function applyBranchMode(node) {
 
   const w = node.widgets?.find((x) => x.name === "enabled");
   if (w) {
-    const off = slots.filter((s, i) => s.link != null && !branchOn(node, i)).length;
+    const wired = slots.filter((s) => s.link != null);
+    const off = wired.filter((s, i) => !branchOn(node, slots.indexOf(s))).length;
+    // The master answers "are they ALL on?", so switching any single branch off
+    // makes it read OFF — that statement simply stopped being true. It does not
+    // mean "everything is off", and it must not make it so: the flag keeps this
+    // write from reaching the master's own setter, where a real click would
+    // cascade to every branch. Reporting here, commanding only when clicked.
+    const allOn = wired.length > 0 && off === 0;
+    if (wired.length) {
+      // A plain assignment: Vue sees it, and a callback only fires on a real
+      // click, so this cannot cascade back into the branches.
+      if (w.value !== allOn) w.value = allOn;
+      // If the master was promoted, the switch on screen is the parent's — the
+      // one here is a passenger, and leaving it alone would show ALL ON above a
+      // subgraph with a branch switched off.
+      const outer = promotedWidget(node, "enabled");
+      if (outer && outer.value !== allOn) {
+        outer.value = allOn;
+        node._allmaWiredMaster = allOn;  // do not re-cascade our own report
+      }
+    }
     // "enabled" describes a value; this one drives every branch at once, so it
     // says what it does. The count only appears when something is actually off.
+    const verbo = node.type === BYPASS_NODE ? "bypassed" : "muted";
     w.label = off
-      ? `Toggle All — ${off} branch${off > 1 ? "es" : ""} off`
+      ? `Toggle All — ${off} branch${off > 1 ? "es" : ""} ${verbo}`
       : "Toggle All";
   }
   node.graph?.setDirtyCanvas?.(true, true);
@@ -133,7 +177,8 @@ function syncToggles(node) {
   // to read. A bare index is enough to tell the slots apart, and the toggle
   // right below carries the state.
   slots.forEach((inp, i) => {
-    inp.label = `${i + 1}${inp.link != null && !branchOn(node, i) ? " (muted)" : ""}`;
+    const marca = node.type === BYPASS_NODE ? " (bypassed)" : " (muted)";
+    inp.label = `${i + 1}${inp.link != null && !branchOn(node, i) ? marca : ""}`;
   });
   if (typeof node.computeSize === "function") {
     const s = node.computeSize();
@@ -160,11 +205,33 @@ let poller = null;
 function startPolling() {
   if (poller) return;
   poller = setInterval(() => {
-    const g = app.graph;
+    // The ROOT, never app.graph: stepping into a subgraph swaps app.graph for
+    // that subgraph, and a muter inside it could then no longer climb out to
+    // read a value promoted from the parent. It fell back to its own widget,
+    // computed a different state, and re-applied it — which is why entering and
+    // leaving a subgraph left the mutes scrambled.
+    const g = rootGraph();
     if (!g) return;
     for (const n of allNodes(g)) {
-      if (n.type !== NODE && n.type !== OLD_NODE) continue;
+      if (!OURS.includes(n.type)) continue;
       const slots = branchInputs(n);
+      // A master driven from outside — a promoted subgraph input, a boolean —
+      // has no click to fire a callback, so its change is caught here and
+      // cascaded exactly as a click would. Only on CHANGE: doing it every tick
+      // would overwrite a branch the user had just set on its own.
+      const wiredMaster = isWired(n, "enabled") ? litValue(n, "enabled") : undefined;
+      if (wiredMaster !== undefined && wiredMaster !== n._allmaWiredMaster) {
+        n._allmaWiredMaster = wiredMaster;
+        (n._allmaToggles || []).forEach((t, k) => {
+          // When a branch toggle is itself promoted, the switch people see and
+          // click lives on the CONTAINING node — the inner widget is a passenger
+          // and writing to it moves nothing. Drive whichever one is real.
+          const outer = promotedWidget(n, `on_${k + 1}`);
+          if (outer) outer.value = wiredMaster; else t.value = wiredMaster;
+        });
+        rootGraph()?.setDirtyCanvas?.(true, true);
+      }
+
       const key = slots
         .map((s, i) => (s.link == null ? "-" : branchOn(n, i) ? "1" : "0"))
         .join("");
@@ -206,7 +273,7 @@ app.registerExtension({
   },
 
   async beforeRegisterNodeDef(nodeType, nodeData) {
-    if (nodeData?.name !== NODE && nodeData?.name !== OLD_NODE) return;
+    if (!OURS.includes(nodeData?.name)) return;
 
     const origCreated = nodeType.prototype.onNodeCreated;
     nodeType.prototype.onNodeCreated = function () {
@@ -217,39 +284,37 @@ app.registerExtension({
       // only reference that survives an unused branch.
       node._allmaToggles = (node.widgets || []).filter((w) => /^on_\d+$/.test(String(w.name)));
 
-      // Intercept the property, not the callback.
+      // Widget callbacks, NOT a property interceptor.
       //
-      // A callback only fires when the widget is clicked on the node. Every
-      // other route writes widget.value directly and silently: the Parameters
-      // panel, a script, and — the reason this matters — a subgraph input
-      // promoted from this toggle. Hooking `value` itself catches all of them,
-      // so the muting reacts no matter where the change came from.
-      const hook = (w, after) => {
-        let stored = w.value;
-        Object.defineProperty(w, "value", {
-          configurable: true,
-          enumerable: true,
-          get: () => stored,
-          set: (v) => {
-            if (stored === v) return;
-            stored = v;
-            after(v);
-          },
-        });
-      };
-
+      // Replacing `value` with Object.defineProperty caught every write — panel,
+      // promotion, script — but it also took the property away from Vue, and
+      // Nodes 2.0 renders these switches reactively. The behaviour stayed right
+      // while the drawing froze: toggles read OFF on screen with their branches
+      // very much alive. Anything that must be seen has to leave `value` alone.
+      //
+      // So: the callback handles the click, and the poller below notices every
+      // other route by comparing the computed state. Slower to react, and it
+      // keeps the switch honest.
       const master = (node.widgets || []).find((w) => w.name === "enabled");
       if (master) {
-        hook(master, (v) => {
-          // The master sets every branch at once; each can still be changed on
-          // its own afterwards, which is the point of having both.
-          for (const t of node._allmaToggles) t.value = v !== false;
+        const orig = master.callback;
+        master.callback = function (...args) {
+          const out = orig?.apply(this, args);
+          const v = master.value !== false;
+          for (const t of node._allmaToggles) t.value = v;
           applyBranchMode(node);
           syncToggles(node);
-        });
+          return out;
+        };
       }
       for (const t of node._allmaToggles) {
-        hook(t, () => { applyBranchMode(node); syncToggles(node); });
+        const orig = t.callback;
+        t.callback = function (...args) {
+          const out = orig?.apply(this, args);
+          applyBranchMode(node);
+          syncToggles(node);
+          return out;
+        };
       }
 
       setTimeout(() => syncToggles(node), 0);

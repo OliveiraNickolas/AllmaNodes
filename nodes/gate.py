@@ -139,6 +139,37 @@ class AllmaMuter(io.ComfyNode):
         return io.NodeOutput()
 
 
+class AllmaBypasser(AllmaMuter):
+    """Same node, same wiring, but the branches are BYPASSED rather than muted.
+
+    Muting removes a node from the graph: whatever it fed sees an unconnected
+    input. Bypassing keeps it in place and passes its input through to its
+    output, so the branch is skipped while the chain around it stays whole —
+    which is what you want for a stage you are stepping over, not a branch you
+    are switching off.
+
+    Everything else is inherited. Only the mode the toggles apply differs, and
+    that lives in the frontend, so this is identity alone.
+    """
+
+    @classmethod
+    def define_schema(cls):
+        schema = super().define_schema()
+        schema.node_id = "AllmaBypasser"
+        schema.display_name = "Allma Bypasser (false = bypass)"
+        schema.category = "Allma/logic"
+        schema.search_aliases = ["bypass", "skip", "passthrough", "branch", "toggle"]
+        schema.description = (
+            "Point it at the stages you want to step over: wire any output into "
+            "a slot and a toggle appears for it. Switching a branch off bypasses "
+            "the node it points at, exactly as Ctrl+B does, so its input passes "
+            "straight through to whatever came after. The master toggle sets "
+            "every branch at once. Use Allma Muter instead when the branch should "
+            "disappear rather than be stepped over."
+        )
+        return schema
+
+
 class AllmaGate(AllmaMuter):
     """Kept so workflows saved under the old id still load.
 

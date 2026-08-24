@@ -1,7 +1,7 @@
 [project]
 name = "comfyui-allmanodes"
 description = "General-purpose ComfyUI nodes: an LLM prompt enhancer for the Allma backend (multi-image, audio, LoRA metadata, presets), plus graph utilities — a branch muter, a named data bus, a VRAM unloader, a combo mirror and a live-text display."
-version = "0.2.0"
+version = "0.2.1"
 license = { file = "LICENSE" }
 dependencies = []
 
