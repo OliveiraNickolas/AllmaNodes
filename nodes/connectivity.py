@@ -6,6 +6,19 @@ from ..api.state import get_state, set_state
 
 AllmaConnectivityType = io.Custom("ALLMA_CONNECTIVITY")
 
+# How long the model reasons, sent as chat_template_kwargs.reasoning_effort.
+#
+# Three levels because three is all the model distinguishes. The Qwen 3.5/3.6/3.8
+# template accepts a wider vocabulary but folds it: 'minimal' lands on low,
+# 'high' and 'max' land on xhigh, and anything it does not recognise — 'ultra'
+# included — silently becomes medium. Offering those aliases would be offering
+# the same three settings under seven names.
+#
+# 'none' is deliberately absent: it means "no thinking", which is what the
+# `thinking` toggle above already does.
+EFFORT_CHOICES = ["low", "medium", "xhigh"]
+EFFORT_DEFAULT = "medium"
+
 _MODELS_CACHE: list[str] = []
 _MODELS_CACHE_HOST = ""
 _MODELS_CACHE_PORT = 0
@@ -49,6 +62,21 @@ class AllmaConnectivity(io.ComfyNode):
                     tooltip="Max seconds per request. Bump for slow first-time loads.",
                 ),
                 io.Combo.Input("model", options=models, default=default_model),
+                io.Boolean.Input(
+                    "thinking", default=False,
+                    tooltip="OFF: the model skips the <think> block and answers "
+                    "directly. ON: it reasons first, and the reasoning comes back "
+                    "on Allma Generate's 'thinking' output instead of leaking into "
+                    "'output_prompt'. Note the reasoning spends the SAME max_tokens "
+                    "budget as the answer.",
+                ),
+                io.Combo.Input(
+                    "effort", options=EFFORT_CHOICES, default=EFFORT_DEFAULT,
+                    tooltip="How long the model reasons when 'thinking' is ON. Not a token "
+                    "budget and it does not lower answer quality — it changes how "
+                    "much the model narrates its way to the answer. A .allm profile "
+                    "declaring @reasoning-effort overrides this.",
+                ),
                 io.Float.Input("temperature", default=1.0, min=0.0, max=2.0, step=0.05),
                 io.Float.Input("top_p", default=0.95, min=0.0, max=1.0, step=0.01),
                 io.Int.Input("top_k", default=20, min=0, max=500,
@@ -75,7 +103,8 @@ class AllmaConnectivity(io.ComfyNode):
 
     @classmethod
     def execute(cls, host, port, timeout, model, temperature, top_p, top_k,
-                max_tokens, seed, show_sampling=False) -> io.NodeOutput:
+                max_tokens, seed, thinking=False, effort=EFFORT_DEFAULT,
+                show_sampling=False) -> io.NodeOutput:
         conn = {
             "host": host.strip() or "127.0.0.1",
             "port": int(port),
@@ -86,6 +115,11 @@ class AllmaConnectivity(io.ComfyNode):
             "top_k": int(top_k),
             "max_tokens": int(max_tokens),
             "seed": int(seed),
+            "thinking": bool(thinking),
+            # Only a real pick travels. The empty string is the signal to leave
+            # chat_template_kwargs.reasoning_effort out of the request entirely,
+            # so the .allm profile (or the model's template) keeps ownership.
+            "reasoning_effort": effort,
         }
         if isinstance(model, str) and model and not model.startswith("("):
             set_state(last_model=model)

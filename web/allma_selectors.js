@@ -1,4 +1,5 @@
 import { app } from "../../scripts/app.js";
+import { allNodes, targetsOf } from "./allma_graph.js";
 
 /* AllmaComboSelect — a dropdown with no list of its own.
  *
@@ -18,22 +19,6 @@ const IDLE_LABEL = "value";
 const IDLE_HINT = "(not connected)";
 
 const MAX_HOPS = 8;
-
-/** Everything downstream of `node`, across all of its outputs. */
-function targetsOf(node) {
-  const links = node.graph?.links;
-  const out = [];
-  for (const output of node.outputs || []) {
-    for (const id of output?.links || []) {
-      // litegraph has shipped links as both a plain object and a Map.
-      const link = links?.get ? links.get(id) : links?.[id];
-      if (!link) continue;
-      const target = node.graph?.getNodeById?.(link.target_id);
-      if (target) out.push({ node: target, slot: link.target_slot });
-    }
-  }
-  return out;
-}
 
 /** The option list of the widget at `slot`, without following anything. */
 function directComboSpec(targetNode, slot) {
@@ -133,7 +118,7 @@ function scheduleResync() {
   if (resyncTimer) return;
   resyncTimer = setTimeout(() => {
     resyncTimer = null;
-    for (const node of app.graph?._nodes || []) {
+    for (const node of allNodes(app.graph)) {
       if (node.type === COMBO_NODE) syncComboNode(node);
     }
   }, 0);

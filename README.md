@@ -16,80 +16,226 @@ that mirrors whatever dropdown you wire it into.
 
 ## Nodes
 
-### `Allma Gate (null when off)`
-Passes its input through when `enabled` is ON, and emits **null** when OFF.
-Works with any type — one node for images, audio, latents, conditioning, models.
+Eight nodes in three groups. The LLM ones need an Allma backend running; the
+utilities do not depend on it at all.
 
-Bypassing or muting a node changes the *graph*, which is frozen the moment you
-queue. A boolean changes a *value*. That is why no combination of built-in nodes
-turns a slot off at runtime: `ExecutionBlocker` kills the whole consuming node
-rather than skipping one input, and `ComfySwitchNode` needs both branches wired
-with nothing native that produces "nothing".
+| Node | Category | What it is for |
+|---|---|---|
+| [Allma Connectivity](#allma-connectivity) | `Allma/llm` | where the backend lives and how to sample from it |
+| [Allma Generate](#allma-generate) | `Allma/llm` | the node that calls the model |
+| [Allma Preset Selector](#allma-preset-selector) | `Allma/llm` | preset name → its system prompt, as a `STRING` |
+| [Allma Live Text](#allma-live-text) | `Allma/llm` | shows a text output while it is still being produced |
+| [Allma Stop](#allma-stop) | `Allma/llm` | a stop button you can put anywhere, subgraphs included |
+| [Allma Load Image](#allma-load-image) | `Allma/utils` | Load Image that also returns the file's prompt metadata |
+| [Clear Allma VRAM](#clear-allma-vram) | `Allma/utils` | unloads the model so another job can have the card |
+| [Combo Select (universal)](#combo-select-universal) | `Allma/utils` | a dropdown that becomes a copy of whichever it is wired to |
+| [Allma Muter (false = mute)](#allma-muter-false--mute) | `Allma/logic` | one node mutes up to ten branches, with a master switch |
+| [Allma Bus In / Out](#allma-bus-in--out) | `Allma/bus` | many wires down one line, unpacked under the same names |
 
-This node emits `None` instead, which any node with an *optional* input already
-handles — `MiniMaxH3ReferenceToVideo`, for instance, does `if img is None:
-continue` and simply ignores that slot.
+---
 
-The input is lazy on purpose: with the gate OFF, nothing upstream of it runs at
-all. An unused image slot's resize is skipped, not computed and discarded.
+### Allma Connectivity
 
-> Only wire the output into inputs declared `optional`. A node that assumes a
-> value is present will raise on null, and the error will point at that node.
+One node holds everything about *the conversation with the model*, so several
+Generate nodes on the same backend share a single set of settings.
 
-### `Allma Connectivity`
-Says *how* to reach the backend and *how* to sample.
+| Widget | Notes |
+|---|---|
+| `host` / `port` / `timeout` | `timeout` is per read, not per answer — a long but progressing generation will not trip it |
+| `model` | filled from `GET /v1/models`. The last model you actually ran becomes the default for every new Connectivity node, in any workflow |
+| `thinking` | ON: the model reasons before answering, and the reasoning lands on Generate's `thinking` output instead of leaking into the prompt |
+| `effort` | `low` · `medium` · `xhigh` — how much the model narrates its way to the answer. Not a token budget and not a quality dial |
+| `temperature` `top_p` `top_k` `max_tokens` `seed` | standard sampling |
+| `show_sampling` | hides the five sampling widgets so you cannot nudge them while dragging the node. Values survive either way |
 
-- `host` / `port` / `timeout`
-- `model` — dropdown fed by `GET /v1/models`. **The last model you actually
-  ran becomes the default** for every new Connectivity node you add, in any
-  workflow (persisted in `state.json`).
-- `temperature` / `top_p` / `top_k` / `max_tokens` / `seed`
-- `show_sampling` — toggle that hides/shows the five sampling widgets so you
-  don't nudge them by accident. Values are preserved either way.
+Outputs one `ALLMA_CONNECTIVITY` link.
 
-Outputs an `ALLMA_CONNECTIVITY` slot that plugs into `Allma Generate`. One
-Connectivity node can feed several Generate nodes.
+> **`max_tokens` is a shared budget.** Thinking and the answer spend the same
+> pool. With thinking ON and a tight budget the model can spend all of it
+> reasoning and return an empty answer — Generate reports that on its `status`
+> output rather than failing.
 
-### `Allma Load Image`
-Drop-in replacement for the stock `Load Image` that *also* extracts the
-image's embedded prompt metadata as a `STRING`.
+> **`effort` has three levels because the model distinguishes three.** Templates
+> in the wild accept `minimal`, `high`, `max`, `ultra` too, but they fold onto
+> the same three — and an unrecognised value silently becomes `medium`.
 
-| Slot     | Type   | Notes                                                        |
-|----------|--------|--------------------------------------------------------------|
-| image    | IMAGE  | identical to the built-in `Load Image`                       |
-| mask     | MASK   | idem                                                         |
-| metadata | STRING | formatted block: source, model, positive/negative, LoRAs, sampler |
+---
 
-Understands **ComfyUI PNGs** (walks the embedded workflow graph), **A1111
-PNGs** (`parameters` chunk), **JPEG EXIF** (best effort). Unknown formats
-return an empty string — nothing breaks downstream.
+### Allma Generate
 
-### `Allma Generate`
-The node that actually calls the LLM.
+Sends the prompt, waits, and hands the answer back into the graph.
 
-Required inputs:
+**Inputs**
 
-| Widget              | Notes                                                          |
-|---------------------|----------------------------------------------------------------|
-| connectivity        | from `Allma Connectivity`                                      |
-| preset              | dropdown; selecting one fills `system_prompt` (client-side)    |
-| system_prompt       | the single source of truth for the system prompt               |
-| user_prompt         | your actual brief                                              |
-| use_image_metadata  | inject connected `image_N_meta` blocks into the system prompt  |
-| thinking            | ON: model reasons first; reasoning goes to the `thinking` output |
-| read_lora_metadata  | ON: inject full LoRA metadata; OFF: trigger words only (see below) |
+| Widget | Notes |
+|---|---|
+| `connectivity` | from Allma Connectivity |
+| `preset` | picking one fills `system_prompt` below |
+| `system_prompt` | the single source of truth for what the model is told |
+| `user_prompt` | your brief |
+| `enabled` | OFF: the LLM is skipped entirely and `user_prompt` passes straight through, so the graph still runs with the backend down |
+| `use_image_metadata` | traces each connected image back to the file it came from and adds that file's prompt metadata |
+| `read_lora_metadata` | ON: full LoRA sidecar. OFF: trigger words only |
 
-Optional inputs: `model` (native `MODEL` — enables LoRA sniffing),
-`image_1..3` + `image_1..3_meta`, `audio` (**experimental** — needs an
-audio-input-capable backend model; text/vision models reject it).
+**Optional links**
 
-Outputs:
+- `model` — a native `MODEL`. Connect it and the node reads the LoRAs applied
+  upstream (see [LoRA awareness](#lora-awareness)).
+- `image_1 … image_9` — grow on demand; only the next empty slot is shown.
+- `audio_1 … audio_3` — needs a backend model that accepts audio.
+- `duration` — seconds. Adds a target-duration block to the system prompt.
 
-| Slot                    | Notes                                                    |
-|-------------------------|----------------------------------------------------------|
-| response                | the model's answer (your engineered prompt)              |
-| thinking                | the reasoning channel when `thinking` is ON, else empty  |
-| assembled_system_prompt | the exact system prompt sent to the backend — wire it to a Show Text node to debug what the LLM saw |
+**Outputs**
+
+| Slot | Notes |
+|---|---|
+| `output_prompt` | the answer. On any failure this carries the raw `user_prompt` instead, never an error message |
+| `thinking` | the reasoning channel, empty when thinking is off |
+| `assembled_system_prompt` | the exact system prompt that was sent — wire it to a text node to see what the model actually read |
+| `status` | empty on a clean run; otherwise says what went wrong (truncation, backend down, no model selected) |
+
+> Diagnostics never travel on `output_prompt`. A node downstream expecting a
+> prompt gets a prompt, even when the run failed.
+
+---
+
+### Allma Preset Selector
+
+Turns a preset name into its system prompt text, as a plain `STRING`.
+
+Useful when you want to switch presets from outside the Generate node — through
+a switch, from another subgraph, or to feed two Generate nodes the same prompt.
+
+---
+
+### Allma Live Text
+
+A display node. Wire it to Generate's `thinking` or `output_prompt` and it fills
+in **while the model is still writing**, instead of staying blank until the run
+finishes.
+
+It works out which output it is watching from its own link: slot 1 shows the
+reasoning, slot 0 the answer. When the run ends, the authoritative value
+replaces whatever was streamed.
+
+---
+
+### Allma Stop
+
+Cancels whatever generation is in flight. The interrupt is global, so this does
+not need to sit next to the Generate node it cancels — which is the point: a
+Generate buried in a subgraph is not somewhere you can reach quickly mid-run.
+
+The label reports what happened rather than pretending: `✅ stopped` when
+something was actually streaming, `· nothing running` when there was not.
+
+---
+
+### Allma Bus In / Out
+
+Many wires down one line. Plug anything into **Bus In** and a new slot appears;
+**Bus Out** gives everything back in the same order, under the same names.
+
+A slot's name is inherited from whatever is plugged into it, and can be changed —
+open `▸ slot names` on the node, or use the Parameters panel. Renaming reaches
+the receiving node as you type.
+
+**Python carries values; the browser carries names.** No name travels in the
+payload, which is what keeps a bus working from an API prompt where no frontend
+ever named anything. It also means the names are free: renaming is not something
+a generation can depend on.
+
+> Collapsed, the name boxes are absent from the node *and* from the Parameters
+> panel — Nodes 2.0 draws widgets from one live list and the panel reads the same
+> list, so there is no "in the panel but off the node" state to offer. Expand to
+> rename.
+
+---
+
+### Allma Load Image
+
+The stock `Load Image` plus the prompt metadata baked into the file.
+
+| Slot | Type | Notes |
+|---|---|---|
+| `image` | IMAGE | same as the built-in |
+| `mask` | MASK | same as the built-in |
+| `metadata` | STRING | source, model, positive/negative, LoRAs, sampler |
+
+Reads **ComfyUI PNGs** (walks the embedded graph), **A1111 PNGs**
+(`parameters` chunk) and **JPEG EXIF** (best effort). An unknown format returns
+an empty string rather than raising.
+
+> Generate does not need this node to see metadata — it traces images back
+> through the graph on its own, the stock Load Image included. This one is for
+> when you want the metadata *as text* in the graph.
+
+---
+
+### Clear Allma VRAM
+
+Unloads the model from the card mid-graph, so a heavy image or video stage
+downstream is not fighting the LLM for memory.
+
+| Widget | Notes |
+|---|---|
+| `any` | anything at all, returned unchanged — this is what puts the node in the middle of a chain |
+| `connectivity` | where the server is. Without it the node cannot ask what is loaded |
+| `kill_orphans` | also terminates inference backends still holding memory after the model was unloaded |
+| `wait_until_free` | hold the graph until the memory is really released, instead of racing the next node |
+| `timeout` | seconds before giving up and letting the graph continue anyway |
+| `enabled` | OFF: pure pass-through |
+
+Outputs the `any` value untouched, plus a `status` string reporting how much was
+actually freed per GPU.
+
+> It is a pass-through on purpose: put it between two nodes and the graph
+> ordering forces it to run at the right moment. A node with no output would
+> run whenever ComfyUI felt like it.
+
+---
+
+### Combo Select (universal)
+
+A dropdown that becomes a copy of whatever dropdown it is plugged into. Wire it
+to a model loader and it lists models; to a sampler and it lists samplers.
+
+It follows the link through switches and reroutes to find the real target, so it
+still works in a graph built out of subgraphs.
+
+---
+
+### Allma Muter (false = mute)
+
+Point it at the branches you want to switch off. Wire any output into a slot, a
+toggle appears for it, and switching that toggle off mutes the node it points at
+— exactly as `Ctrl+M` does — along with everything that feeds only that node.
+
+Up to ten branches on one node. `Toggle All` sets them all at once; each can
+still be changed on its own afterwards.
+
+**Nothing passes through.** There are no outputs: the real wire still runs
+straight from the source to whatever consumes it, and this node only *points at*
+the branch. That also means it never executes — with nothing downstream it is
+pruned before the graph runs, which is right for a control surface.
+
+**Why muting rather than a value.** Bypassing or muting by hand changes the
+*graph*, and the graph is frozen the moment you queue; a boolean changes a
+*value*. Nothing built-in bridges the two — `ExecutionBlocker` kills the whole
+consuming node rather than skipping one input, and `ComfySwitchNode` needs both
+branches wired. Muting removes the nodes outright, so an output node downstream
+of the same branch cannot drag it back in either.
+
+**A toggle can be driven by a wire**, but only from a literal — a boolean
+primitive, or a subgraph input promoted from one. The value is read in the
+browser, before the graph is queued, because a value travelling on a link does
+not exist until the graph is already running. A boolean some node *computes*
+cannot be known in time, and the last clicked state is used instead.
+
+> Nodes you muted by hand are never woken up again by the muter. Only the ones it
+> put to sleep come back.
+
+---
 
 ## LoRA awareness
 
@@ -171,12 +317,29 @@ prompt/model/LoRAs behind the reference image and can replay them.
 
 ## Thinking mode
 
-`thinking` OFF asks the chat template to skip the `<think>` block
-(`chat_template_kwargs.enable_thinking=false` — Qwen-style models respect
-this). ON lets the model reason; the reasoning arrives on the dedicated
-`thinking` output and never pollutes `response`. If `max_tokens` is exhausted
-mid-thinking, the response slot carries an explicit warning instead of
-silently returning nothing.
+Both controls live on **Allma Connectivity**, because they describe the
+conversation with the model rather than any single prompt — one switch covers
+every Generate node on that backend.
+
+`thinking` OFF sends `chat_template_kwargs.enable_thinking = false`, which
+Qwen-style templates respect. ON lets the model reason, and the reasoning
+arrives on Generate's dedicated `thinking` output — it never pollutes
+`output_prompt`.
+
+`effort` rides along as `chat_template_kwargs.reasoning_effort` and picks how
+much the model narrates on the way to the answer: `low`, `medium`, `xhigh`.
+It is not a token budget and it does not lower answer quality.
+
+**Thinking and the answer share `max_tokens`.** With a tight budget the model
+can spend the whole thing reasoning and return nothing — measured: at 96 tokens
+with thinking ON, all 96 went to reasoning and the answer came back empty; with
+thinking OFF the same question was answered correctly in 12. When that happens
+the `status` output says so explicitly instead of leaving you with a blank slot.
+
+Backends that ignore `chat_template_kwargs` will keep reasoning regardless of
+the toggle. The quick way to tell: run the same prompt with thinking ON and OFF
+— identical output means the field was dropped, and the reasoning has to be
+controlled from the system prompt or the server's own flags instead.
 
 ## Install
 

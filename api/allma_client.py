@@ -146,6 +146,7 @@ def _consume_stream(r, relay=None) -> tuple[str, str, str]:
     content_parts: list[str] = []
     think_parts: list[str] = []
     finish_reason = ""
+    saw_done = False
 
     def _partial() -> tuple[str, str]:
         return "".join(content_parts), "".join(think_parts)
@@ -160,6 +161,7 @@ def _consume_stream(r, relay=None) -> tuple[str, str, str]:
                 continue
             payload = line[5:].strip()
             if payload == "[DONE]":
+                saw_done = True
                 break
             try:
                 chunk = json.loads(payload)
@@ -196,6 +198,13 @@ def _consume_stream(r, relay=None) -> tuple[str, str, str]:
         c, t = _partial()
         raise Cancelled(c, t)
 
+    # A stream that just stops — no [DONE], no finish_reason — means the socket
+    # closed mid-answer. Iterating the response yields nothing more and the loop
+    # exits silently, so without this the node would hand a half-written prompt
+    # downstream as though the model had finished speaking.
+    if not saw_done and not finish_reason:
+        finish_reason = "incomplete"
+
     return "".join(content_parts), "".join(think_parts), finish_reason
 
 
@@ -212,6 +221,7 @@ def chat_completion(
     max_tokens: int = 2048,
     seed: int | None = None,
     enable_thinking: bool = False,
+    reasoning_effort: str = "",
     retry_on_loading: bool = True,
     max_retries: int = 40,
     relay=None,
@@ -251,8 +261,17 @@ def chat_completion(
         body["top_k"] = int(top_k)
     if seed is not None and seed >= 0:
         body["seed"] = int(seed)
+    # Both ride in chat_template_kwargs, which is what the model's own chat
+    # template reads. Allma's ownership rule: a .allm profile declaring the same
+    # directive overrides whatever we send, and a silent profile lets it through
+    # — so sending nothing is a real choice, not a missing value.
+    ctk: dict = {}
     if not enable_thinking:
-        body["chat_template_kwargs"] = {"enable_thinking": False}
+        ctk["enable_thinking"] = False
+    if reasoning_effort:
+        ctk["reasoning_effort"] = reasoning_effort
+    if ctk:
+        body["chat_template_kwargs"] = ctk
 
     data = json.dumps(body).encode("utf-8")
     req = urllib.request.Request(
@@ -287,12 +306,21 @@ def chat_completion(
             # between the two channels and the finish_reason are what tell a
             # real truncation apart from text that merely landed in 'thinking'.
             print(
-                f"{LOG} finish_reason={finish_reason or 'stop'} "
+                f"{LOG} finish_reason={finish_reason or 'none'} "
                 f"content={len(content)} chars  reasoning={len(thinking)} chars"
             )
 
             status = ""
-            if finish_reason == "length":
+            if finish_reason == "incomplete":
+                status = (
+                    "the backend closed the stream mid-answer — no completion "
+                    "signal arrived, so the text below stops wherever it stopped. "
+                    "Usually the server dropped the connection (idle keep-alive, "
+                    "a crash, or a model reload). Re-run; if it repeats, check the "
+                    "Allma logs at the moment it cuts."
+                )
+                print(f"{LOG} ⚠ {status}")
+            elif finish_reason == "length":
                 if not content and thinking:
                     status = (
                         f"response cut off — max_tokens={max_tokens} was exhausted "

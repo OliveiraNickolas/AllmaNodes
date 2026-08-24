@@ -321,8 +321,31 @@ function makeLabel(id, text, opts = {}) {
  * zeroing the height means overriding that hook — and the element itself has
  * to be hidden too, or it keeps painting over the node at its last position. */
 function setTextareaCollapsed(node, name, collapsed) {
-  const w = widget(node, name);
+  node._allmaStash = node._allmaStash || {};
+  // While collapsed the widget is OUT of node.widgets, so looking it up there
+  // finds nothing and expanding would return before restoring anything. The
+  // stash is the only reference that survives the collapsed state.
+  const w = widget(node, name) || node._allmaStash[name];
   if (!w) return;
+
+  // Nodes 2.0 renders from node.widgets with Vue and ignores the per-widget
+  // height hooks below: measured on the live frontend, clicking the label left
+  // the node at exactly the same height. The only thing that removes a widget
+  // there is taking it out of the list, so that is what actually collapses it.
+  if (collapsed) {
+    if ((node.widgets || []).includes(w)) {
+      node._allmaStash[name] = w;
+      node.widgets = (node.widgets || []).filter((x) => x !== w);
+    }
+  } else if (node._allmaStash[name]) {
+    if (!(node.widgets || []).includes(w)) node.widgets.push(w);
+    delete node._allmaStash[name];
+    // Pushed to the end, so the layout has to be restated.
+    applyWidgetOrder(node, GENERATE_ORDER);
+  }
+
+  // The legacy renderer honours these, and still draws the element even when
+  // the widget is absent from the list — so both paths are needed.
   w.options = w.options || {};
   if (collapsed) {
     w.options.getMinHeight = () => 0;
@@ -355,11 +378,15 @@ function toggleSystemCollapsed(node) {
   node.properties[COLLAPSE_PROP] = collapsing;
   setTextareaCollapsed(node, "system_prompt", collapsing);
 
-  // The node's height is the user's to set, so it is left exactly as it is.
-  // Re-setting the current size (rather than computing a new one) just forces
-  // the layout pass to run: the freed rows go to 'prompt', which shares the
-  // same floor-only height rule and absorbs whatever the collapse released.
-  node.setSize(node.size);
+  // The widget is now genuinely in or out of node.widgets, so the height has to
+  // be recomputed rather than merely re-applied — re-applying kept the node at
+  // its old size with an empty gap where the textarea had been.
+  if (typeof node.computeSize === "function") {
+    const s = node.computeSize();
+    node.setSize([Math.max(node.size?.[0] ?? s[0], s[0]), s[1]]);
+  } else {
+    node.setSize(node.size);
+  }
   node.setDirtyCanvas(true, true);
 }
 
@@ -389,7 +416,6 @@ function applyWidgetOrder(node, ids) {
 // serialize, which is why every reshuffle needs a migration below.
 const GENERATE_ORDER = [
   "use_image_metadata",
-  "thinking",
   "read_lora_metadata",
   "allma_sep",
   "preset",
@@ -404,7 +430,7 @@ const GENERATE_ORDER = [
 
 // Serializable widgets per layout revision, in the order their values were
 // written. Bumping LAYOUT_VERSION requires appending the previous order here.
-const LAYOUT_VERSION = 4;
+const LAYOUT_VERSION = 5;
 const VALUE_ORDERS = {
   // v1: original node, before any reordering
   1: ["preset", "system_prompt", "user_prompt",
@@ -417,6 +443,11 @@ const VALUE_ORDERS = {
       "preset", "user_prompt", "system_prompt"],
   // v4: `enabled` toggle appended after system_prompt
   4: ["use_image_metadata", "thinking", "read_lora_metadata",
+      "preset", "user_prompt", "system_prompt", "enabled"],
+  // v5: `thinking` moved to AllmaConnectivity, so one switch covers every
+  // Generate node on the same backend. Dropping a name mid-array is exactly
+  // what the by-name mapping below handles: the value is simply not carried.
+  5: ["use_image_metadata", "read_lora_metadata",
       "preset", "user_prompt", "system_prompt", "enabled"],
 };
 
@@ -445,6 +476,46 @@ function migrateGenerateValues(values, properties) {
   // declared default, an undefined entry would overwrite it with nothing.
   while (mapped.length && mapped[mapped.length - 1] === undefined) mapped.pop();
   return mapped;
+}
+
+/** Re-ask the backend for its model list and refresh the dropdown in place.
+ *
+ * The dropdown is built once, when ComfyUI imports the pack. A backend that was
+ * down, still loading, or stuck in a failed load at that moment leaves the list
+ * empty until ComfyUI itself is restarted — and a stuck load answers every later
+ * request with a bare HTTP 500, so the node looks broken when the backend is.
+ * This asks again, live, and reports what the backend says about itself. */
+async function reconnect(node, button) {
+  const w = widget(node, "model");
+  const host = widget(node, "host")?.value || "127.0.0.1";
+  const port = widget(node, "port")?.value || 9000;
+  const label = button?.name;
+  const say = (t) => { if (button) { button.name = t; node.setDirtyCanvas(true, true); } };
+
+  say("connecting…");
+  try {
+    const r = await fetch(`/allma/models?host=${encodeURIComponent(host)}&port=${port}`);
+    const d = await r.json();
+    const models = d.models || [];
+    if (w && models.length) {
+      w.options = w.options || {};
+      w.options.values = models;
+      // A model that vanished from the backend must not stay selected, or the
+      // run fails later with a confusing "no valid model" instead of here.
+      if (!models.includes(w.value)) w.value = models[0];
+    }
+    if (d.error) {
+      console.warn(`[AllmaNodes] backend reports: ${d.error} (${d.error_model || "?"})`);
+      say(`⚠ ${models.length} model(s) — backend error`);
+    } else {
+      say(`✓ ${models.length} model(s)`);
+    }
+  } catch (e) {
+    console.warn("[AllmaNodes] reconnect failed", e);
+    say("✖ unreachable");
+  }
+  setTimeout(() => say(label), 4000);
+  node.setDirtyCanvas(true, true);
 }
 
 function applyConnectivityVisibility(node) {
@@ -485,6 +556,20 @@ async function applyLastModel(node) {
   }
 }
 
+// No positional migration for AllmaConnectivity, deliberately.
+//
+// An earlier build remapped widgets_values by name whenever the array "looked
+// like" an older layout. That detection keys off array LENGTH, and length is not
+// a reliable signal: converting a widget to an input removes it from the array,
+// so a node with `model` linked looks exactly like a pre-change save. The remap
+// then fired on every load and shifted every value one place further — the node
+// lost its settings a little more on each refresh, silently, until temperature
+// read NaN and max_tokens held what top_k used to.
+//
+// A one-off shift on workflows saved before `thinking` and `effort` existed is
+// the smaller cost, and it is visible: wrong numbers show up immediately and are
+// corrected by hand once, rather than drifting forever.
+
 app.registerExtension({
   name: "allma.connectivity_ui",
   async beforeRegisterNodeDef(nodeType, nodeData) {
@@ -493,6 +578,29 @@ app.registerExtension({
     const origCreated = nodeType.prototype.onNodeCreated;
     nodeType.prototype.onNodeCreated = function () {
       const r = origCreated?.apply(this, arguments);
+      const btn = this.addWidget("button", "🔌 reconnect", null, () => reconnect(this, btn));
+      // BOTH flags. serialize alone still leaves a null hole in widgets_values,
+      // and a hole at index 3 shifts every later value by one — which silently
+      // reset saved timeouts and token budgets to their defaults.
+      btn.serialize = false;
+      btn.options = { serialize: false };
+      // The label doubles as a status line during a reconnect, so anything that
+      // keys off widget names must use this instead — see widgetId().
+      btn._allmaId = "reconnect";
+      // LEFT LAST ON PURPOSE — do not reorder this into the middle of the node.
+      //
+      // On load ComfyUI assigns widgets_values POSITIONALLY: values[i] goes to
+      // widgets[i]. `serialize: false` governs writing, not reading, so a
+      // non-serializing widget sitting at index 3 still consumes the value meant
+      // for the widget that used to be there, and every later value slides one
+      // place. Re-saving persists the slide, so the node loses its settings a
+      // little more on every refresh — temperature ends up NaN and max_tokens
+      // holds whatever top_k used to.
+      //
+      // Appended at the end, there is no saved value at its index, so nothing
+      // can shift. The cosmetic cost is that the button sits below the sampling
+      // widgets instead of beside the model picker.
+
       const showW = widget(this, "show_sampling");
       if (showW) {
         const origCb = showW.callback;
@@ -805,6 +913,23 @@ async function allmaInterrupt(node) {
 app.registerExtension({
   name: "allma.stop_ui",
   async beforeRegisterNodeDef(nodeType, nodeData) {
+    // The standalone node is nothing but this button, so it is wired up here
+    // rather than in its own extension — same handler, same label states.
+    if (nodeData?.name === "AllmaStop") {
+      const origStop = nodeType.prototype.onNodeCreated;
+      nodeType.prototype.onNodeCreated = function () {
+        const r = origStop?.apply(this, arguments);
+        const stop = this.addWidget("button", IDLE_LABEL, null,
+          () => allmaInterrupt(this));
+        stop._allmaId = "stop";
+        stop.serialize = false;
+        stop.options = { serialize: false };
+        this._allmaStopWidget = stop;
+        this.size = [230, 58];
+        return r;
+      };
+      return;
+    }
     if (nodeData?.name !== "AllmaGenerate") return;
 
     const origCreated = nodeType.prototype.onNodeCreated;

@@ -238,13 +238,6 @@ class AllmaGenerate(io.ComfyNode):
                     "reason over the original prompt/model/LoRAs behind the picture.",
                 ),
                 io.Boolean.Input(
-                    "thinking", default=False,
-                    tooltip="OFF: model skips the <think> block and returns the answer "
-                    "directly. ON: model reasons first; the reasoning is exposed on the "
-                    "'thinking' output so it doesn't leak into 'output_prompt'. Note the "
-                    "reasoning spends the SAME max_tokens budget as the answer.",
-                ),
-                io.Boolean.Input(
                     "read_lora_metadata", default=True,
                     tooltip="ON: when MODEL is connected, inject each LoRA's full "
                     "sidecar block (trigger_words + notes + usage_tips + author "
@@ -317,7 +310,6 @@ class AllmaGenerate(io.ComfyNode):
         user_prompt,
         enabled=True,
         use_image_metadata=True,
-        thinking=False,
         read_lora_metadata=True,
         model=None,
         images=None,
@@ -337,6 +329,11 @@ class AllmaGenerate(io.ComfyNode):
 
         if not isinstance(connectivity, dict):
             raise RuntimeError("Missing connectivity input — connect AllmaConnectivity.")
+
+        # Thinking moved to AllmaConnectivity so one switch covers every Generate
+        # node fed by the same backend — the setting belongs to the conversation
+        # with the model, not to an individual prompt.
+        thinking = bool(connectivity.get("thinking", False))
 
         model_name = connectivity.get("model") or ""
         if not model_name or model_name.startswith("("):
@@ -387,12 +384,20 @@ class AllmaGenerate(io.ComfyNode):
 
         image_urls: list[str] = []
         meta_blocks: list[str] = []
+        sent_slots: list[str] = []
         traced = 0
         for idx, (slot, img) in enumerate(zip(IMAGE_SLOTS, raw_images), start=1):
             if img is None:
                 continue
             try:
-                image_urls.append(image_tensor_to_data_url(img))
+                url = image_tensor_to_data_url(img)
+                image_urls.append(url)
+                # Logged per run because "the model did not see my picture" has
+                # several possible causes — an unwired slot, an encode failure,
+                # or the backend dropping parts — and only the count and payload
+                # size tell them apart from the ComfyUI side.
+                h, w = (img.shape[1], img.shape[2]) if hasattr(img, "shape") and len(img.shape) >= 3 else ("?", "?")
+                sent_slots.append(f"{slot}({w}x{h}, {len(url) // 1024}KB)")
             except Exception as e:
                 print(f"{LOG} failed to encode {slot}: {e}")
             if not use_image_metadata:
@@ -415,6 +420,10 @@ class AllmaGenerate(io.ComfyNode):
                 effective_system + "\n\n" + "\n\n".join(meta_blocks)
             ).strip()
             print(f"{LOG} attached metadata for {len(meta_blocks)} image(s)")
+        if sent_slots:
+            print(f"{LOG} sending {len(image_urls)} image(s): {', '.join(sent_slots)}")
+        elif raw_images and any(i is not None for i in raw_images):
+            print(f"{LOG} ⚠ images were wired but none encoded")
 
         audio_b64, audio_fmt = "", ""
         for slot, audio in zip(AUDIO_SLOTS, _ordered(audios, AUDIO_SLOTS)):
@@ -454,7 +463,8 @@ class AllmaGenerate(io.ComfyNode):
                 top_k=connectivity.get("top_k", 20),
                 max_tokens=connectivity.get("max_tokens", 2048),
                 seed=connectivity.get("seed", -1),
-                enable_thinking=bool(thinking),
+                enable_thinking=thinking,
+                reasoning_effort=connectivity.get("reasoning_effort", ""),
                 relay=relay,
             )
         except Cancelled as c:

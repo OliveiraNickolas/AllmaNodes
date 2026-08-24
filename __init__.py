@@ -6,7 +6,10 @@ Talks to the Allma backend (OpenAI-compatible):
   - AllmaLoadImage:    image + its embedded prompt metadata on one link
   - AllmaComboSelect:  a dropdown that mirrors whatever it is plugged into
   - AllmaPresetPrompt: preset name → the preset's system prompt
-  - AllmaGate:         pass a value through, or emit null when switched off
+  - AllmaBusIn/Out:    many wires into one, unpacked under the same names
+  - AllmaMuter:        one boolean mutes the whole branch feeding it
+  - AllmaGate:         deprecated id kept so old workflows still load
+  - AllmaStop:         a stop button placeable away from the Generate node
 Plus preset CRUD over HTTP and a JS extension for the inline controls.
 
 Registered through comfy_entrypoint because AllmaGenerate needs the V3 schema
@@ -18,13 +21,16 @@ from comfy_api.latest import ComfyExtension, io
 
 from .api.interrupt import register_interrupt_endpoints
 from .api.lora_intercept import install as _install_lora_intercept
+from .api.reconnect import register_reconnect_endpoint
 from .api.state import register_state_endpoints
+from .nodes.bus import AllmaBusIn, AllmaBusOut
 from .nodes.connectivity import AllmaConnectivity
-from .nodes.gate import AllmaGate
+from .nodes.gate import AllmaGate, AllmaMuter
 from .nodes.generate import AllmaGenerate
 from .nodes.live_text import AllmaLiveText
 from .nodes.load_image import AllmaLoadImage
 from .nodes.preset import register_preset_endpoints
+from .nodes.stop import AllmaStop
 from .nodes.selectors import AllmaComboSelect, AllmaPresetPrompt
 from .nodes.vram import AllmaClearVRAM
 
@@ -36,6 +42,7 @@ except Exception as _e:
 for _register, _label in (
     (register_preset_endpoints, "preset endpoints"),
     (register_state_endpoints, "state endpoint"),
+    (register_reconnect_endpoint, "reconnect endpoint"),
     (register_interrupt_endpoints, "interrupt endpoints"),
 ):
     try:
@@ -51,12 +58,16 @@ class AllmaExtension(ComfyExtension):
         return [
             AllmaConnectivity,
             AllmaGenerate,
+            AllmaMuter,
             AllmaGate,
             AllmaLoadImage,
             AllmaLiveText,
             AllmaComboSelect,
             AllmaPresetPrompt,
             AllmaClearVRAM,
+            AllmaStop,
+            AllmaBusIn,
+            AllmaBusOut,
         ]
 
 

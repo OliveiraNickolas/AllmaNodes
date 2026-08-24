@@ -1,5 +1,6 @@
 import { app } from "../../scripts/app.js";
 import { api } from "../../scripts/api.js";
+import { allNodes, resolveUpstream } from "./allma_graph.js";
 
 /* Allma Live Text — a display that fills in while the model is still typing.
  *
@@ -19,22 +20,20 @@ const MAX_CHARS = 20000; // a runaway think loop must not grow the DOM forever
 
 let ComfyWidgets;
 
-/** The node id feeding our `text` input, or null when unconnected. */
-function sourceId(node) {
-  const input = node.inputs?.find((i) => i.name === "text");
-  if (!input || input.link == null) return null;
-  const links = node.graph?.links;
-  const link = links?.get ? links.get(input.link) : links?.[input.link];
-  return link ? String(link.origin_id) : null;
-}
-
-/** Which output slot we are reading: 1 is `thinking`, 0 is `output_prompt`. */
-function sourceSlot(node) {
-  const input = node.inputs?.find((i) => i.name === "text");
-  if (!input || input.link == null) return null;
-  const links = node.graph?.links;
-  const link = links?.get ? links.get(input.link) : links?.[input.link];
-  return link ? link.origin_slot : null;
+/** Does a stream event come from the node feeding us?
+ *
+ * The backend identifies itself with its EXECUTION id, which ComfyUI namespaces
+ * for anything inside a subgraph — "6158:6160" rather than "6160". The link we
+ * read only knows the local id, so a plain equality check silently never fires
+ * and the box stays empty for every node that lives in a subgraph.
+ *
+ * Matching the last path segment reconnects the two. Two instances of the same
+ * subgraph would share a local id and both boxes would fill; that is a far
+ * smaller problem than the display never working inside a subgraph at all. */
+function isOurSource(localId, streamId) {
+  if (localId == null || streamId == null) return false;
+  const s = String(streamId);
+  return s === localId || s.endsWith(":" + localId);
 }
 
 function box(node) {
@@ -76,14 +75,15 @@ app.registerExtension({
 
     api.addEventListener(EVENT, (e) => {
       const d = e.detail || {};
-      for (const node of app.graph?._nodes || []) {
+      for (const node of allNodes(app.graph)) {
         if (node.type !== NODE) continue;
-        if (sourceId(node) !== String(d.node)) continue;
+        const src = resolveUpstream(node, "text");
+        if (!src || !isOurSource(src.id, d.node)) continue;
 
         // slot 1 = thinking, slot 0 = output_prompt. Show the channel this
         // node is actually wired to, and ignore the other one.
-        const slot = sourceSlot(node);
-        const wanted = slot === 1 ? "reasoning" : "content";
+
+        const wanted = src.slot === 1 ? "reasoning" : "content";
 
         if (d.event === "start") {
           node._allmaBuf = "";

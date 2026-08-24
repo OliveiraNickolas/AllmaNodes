@@ -35,6 +35,7 @@ class Relay:
         self._buf: list[str] = []
         self._n = 0
         self._last = time.time()
+        self._kind: str | None = None
         self.total = 0
 
     def start(self) -> None:
@@ -43,6 +44,14 @@ class Relay:
     def add(self, text: str, kind: str = "reasoning") -> None:
         if not text or not self.node_id:
             return
+        # One buffer serves both channels, so a switch from reasoning to content
+        # has to flush first. Without this the pending text goes out labelled
+        # with whichever kind happened to arrive last, and reasoning lands in the
+        # answer box (or the reverse) — the two interleave freely on backends
+        # that emit them in the same stream.
+        if self._kind is not None and kind != self._kind:
+            self.flush(self._kind)
+        self._kind = kind
         self._buf.append(text)
         self._n += len(text)
         self.total += len(text)
@@ -62,7 +71,7 @@ class Relay:
         self._last = time.time()
 
     def done(self, note: str = "") -> None:
-        self.flush()
+        self.flush(self._kind or "reasoning")
         _send({
             "node": self.node_id, "event": "done",
             "total": self.total, "note": note,
