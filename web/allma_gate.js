@@ -395,18 +395,34 @@ function applyWirelessLayout(node, resize) {
   if (!node) return;
   const on = Boolean(node.properties?.[PROP_WIRELESS]);
   const before = slotRows(node);
+  // Measured BEFORE anything moves (the inputs below and the button).
+  const needBefore = resize && typeof node.computeSize === "function" ? node.computeSize()[1] : null;
   for (const inp of node.inputs || []) {
     if (!isBranchInput(inp)) continue;
     if (on) inp.pos = [...OFFSTAGE];
     else if (isOffstage(inp)) delete inp.pos;
   }
   const btn = connectButtonOf(node);
-  if (btn) setWidgetHidden(btn, on);
+  if (btn && setWidgetHidden(btn, on)) refreshVueWidgets(node);
   node._setConcreteSlots?.();
   if (resize && node.size) {
-    const H = LiteGraph.NODE_SLOT_HEIGHT || 20;
-    const delta = (slotRows(node) - before) * H;
-    if (delta) node.setSize([node.size[0], Math.max(60, node.size[1] + delta)]);
+    // By exactly what the node needs now vs before — the slot rows AND the
+    // Connect button wireless hides (only the rows were counted: wireless ON
+    // left 24px of empty space). ComfyUI updates what the node needs only on
+    // the next draw, so measure after it: a node that fitted keeps fitting,
+    // one the user made taller keeps its extra room.
+    const fitted = needBefore != null && Math.abs(node.size[1] - needBefore) <= 4;
+    const extra = needBefore != null ? node.size[1] - needBefore : 0;
+    const apply = () => {
+      if (!node.size || typeof node.computeSize !== "function") return;
+      const need = node.computeSize()[1];
+      const h = fitted ? need : Math.max(need, need + extra);
+      if (Math.abs(node.size[1] - h) > 1) node.setSize([node.size[0], Math.max(60, h)]);
+      node.setDirtyCanvas?.(true, true);
+    };
+    node.setDirtyCanvas?.(true, true);
+    requestAnimationFrame(() => requestAnimationFrame(apply));
+    setTimeout(apply, 120);   // in case no frame is drawn (tab in background)
   }
   node.setDirtyCanvas?.(true, true);
 }
@@ -687,11 +703,27 @@ function aplicarSolo(node, escolha) {
 /** Hide/show a widget in BOTH renderers: the canvas reads `hidden`, Nodes 2.0
  * (Vue) reads `options.hidden` — the same pair ComfyUI's own code sets. */
 function setWidgetHidden(w, hide) {
-  if (!w) return;
+  if (!w) return false;
   hide = Boolean(hide);
+  const changed = Boolean(w.hidden) !== hide || Boolean(w.options?.hidden) !== hide;
   w.hidden = hide;
   if (w.options) w.options.hidden = hide;
   else w.options = { hidden: hide };
+  return changed;
+}
+
+/**
+ * Nodes 2.0 decides which widget rows to draw when the node's widget LIST
+ * changes, not when a widget's `hidden` flips — so a row hidden later stayed
+ * on screen and the node kept its height. Touching the list (push + pop of the
+ * same item) makes it lay the rows out again. Only after a real change.
+ */
+function refreshVueWidgets(node) {
+  if (!window.LiteGraph?.vueNodesMode) return;
+  const arr = node?.widgets;
+  if (!Array.isArray(arr) || !arr.length) return;
+  arr.push(arr[0]);
+  arr.pop();
 }
 
 /** Tell Nodes 2.0 that slot labels changed (it keeps its own copy). */
@@ -813,12 +845,14 @@ function syncToggles(node) {
   node.widgets = [...topWidgets, ...all];
   if (node.properties?.[PROP_WIRELESS]) applyWirelessLayout(node, false);
   const hideBranches = Boolean(node.properties?.[PROP_HIDE_SWITCHES]);
-  all.forEach((t, i) => setWidgetHidden(t, hideBranches || !wired.has(i + 1)));
+  let vueDirty = false;
+  all.forEach((t, i) => { if (setWidgetHidden(t, hideBranches || !wired.has(i + 1))) vueDirty = true; });
   syncSwitchOutputs(node, wired);
   announceSlotLabels(node);
   const solo = soloWidget(node);
-  if (solo) setWidgetHidden(solo, node.properties?.[PROP_HIDE_SOLO]);
-  if (master) setWidgetHidden(master, node.properties?.[PROP_HIDE_MASTER]);
+  if (solo && setWidgetHidden(solo, node.properties?.[PROP_HIDE_SOLO])) vueDirty = true;
+  if (master && setWidgetHidden(master, node.properties?.[PROP_HIDE_MASTER])) vueDirty = true;
+  if (vueDirty) refreshVueWidgets(node);
   const outerSolo = promotedWidget(node, "solo");
   const numeros = [...wired].sort((a, b) => a - b).map(String);
   const optsValues = ["none", ...numeros];
