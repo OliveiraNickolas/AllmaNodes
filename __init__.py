@@ -7,6 +7,7 @@ Talks to the Allma backend (OpenAI-compatible):
   - AllmaComboSelect:  a dropdown that mirrors whatever it is plugged into
   - AllmaPresetPrompt: preset name → the preset's system prompt
   - AllmaBusIn/Out:    many wires into one, unpacked under the same names
+  - AllmaFallback:     many wires in, the first one that actually arrived out
   - AllmaMuter:        one boolean mutes the whole branch feeding it
   - AllmaBypasser:     the same, but bypassing instead of muting
   - AllmaGate:         deprecated id kept so old workflows still load
@@ -21,24 +22,32 @@ node here has to be a V3 io.ComfyNode.
 from comfy_api.latest import ComfyExtension, io
 
 from .api.interrupt import register_interrupt_endpoints
+from .api.lazy_dynamic import install as _install_lazy_dynamic
 from .api.lora_intercept import install as _install_lora_intercept
 from .api.reconnect import register_reconnect_endpoint
 from .api.state import register_state_endpoints
+from .nodes.fallback import AllmaFallback
 from .nodes.bus import AllmaBusIn, AllmaBusOut
 from .nodes.connectivity import AllmaConnectivity
 from .nodes.gate import AllmaBypasser, AllmaGate, AllmaMuter
 from .nodes.generate import AllmaGenerate
 from .nodes.live_text import AllmaLiveText
 from .nodes.load_image import AllmaLoadImage
+from .nodes.noise import AllmaRandomNoise
 from .nodes.preset import register_preset_endpoints
+from .nodes.save_image import AllmaSaveImage
 from .nodes.stop import AllmaStop
 from .nodes.selectors import AllmaComboSelect, AllmaPresetPrompt
 from .nodes.vram import AllmaClearVRAM
 
-try:
-    _install_lora_intercept()
-except Exception as _e:
-    print(f"[AllmaNodes] lora intercept not installed: {_e}")
+for _install, _what in (
+    (_install_lora_intercept, "lora intercept"),
+    (_install_lazy_dynamic, "lazy fix for dynamic inputs"),
+):
+    try:
+        _install()
+    except Exception as _e:
+        print(f"[AllmaNodes] {_what} not installed: {_e}")
 
 for _register, _label in (
     (register_preset_endpoints, "preset endpoints"),
@@ -67,9 +76,12 @@ class AllmaExtension(ComfyExtension):
             AllmaComboSelect,
             AllmaPresetPrompt,
             AllmaClearVRAM,
+            AllmaSaveImage,
             AllmaStop,
             AllmaBusIn,
             AllmaBusOut,
+            AllmaFallback,
+            AllmaRandomNoise,
         ]
 
 

@@ -115,6 +115,11 @@ def parse_comfyui_workflow(graph_json: str) -> dict:
     loras: list[dict] = []
     sampler_bits: list[str] = []
     class_types: list[str] = []
+    seeds: list[int] = []
+    steps_list: list[int] = []
+
+    allma_user_prompt = None
+    allma_enhancer = None
 
     def _widgets(entry):
         return entry.get("inputs", {}).get("__widgets__") or []
@@ -160,6 +165,28 @@ def parse_comfyui_workflow(graph_json: str) -> dict:
                     return got
         return ""
 
+    def _resolve_bool(value, _seen=None, _depth=0):
+        if isinstance(value, bool):
+            return value
+        if _depth > 6 or not isinstance(value, (list, tuple)) or not value:
+            return None
+        node_id = str(value[0])
+        _seen = _seen or set()
+        if node_id in _seen:
+            return None
+        _seen.add(node_id)
+        target = nodes.get(node_id)
+        if not isinstance(target, dict):
+            return None
+        t_in = target.get("inputs", {}) or {}
+        v = t_in.get("value")
+        if isinstance(v, bool):
+            return v
+        for w in _widgets(target):
+            if isinstance(w, bool):
+                return w
+        return None
+
     for key, entry in nodes.items():
         ct = entry.get("class_type", "") or ""
         class_types.append(ct)
@@ -175,6 +202,20 @@ def parse_comfyui_workflow(graph_json: str) -> dict:
                     name = w[0]
             if name:
                 model_names.append(str(name))
+
+        elif "allmagenerate" in low:
+            up_val = inp.get("user_prompt")
+            if up_val:
+                res_up = _resolve_text(up_val)
+                if res_up.strip():
+                    allma_user_prompt = res_up.strip()
+            en_val = inp.get("enabled")
+            if en_val is not None:
+                res_en = _resolve_bool(en_val)
+                if res_en is not None:
+                    allma_enhancer = res_en
+                elif isinstance(en_val, bool):
+                    allma_enhancer = en_val
 
         elif "cliptextencode" in low or "textencode" in low or "conditioning" in low and "text" in low:
             text = _resolve_text(inp.get("text") or inp.get("prompt") or "")
@@ -220,7 +261,44 @@ def parse_comfyui_workflow(graph_json: str) -> dict:
                     strength = None
                 loras.append({"name": str(name), "strength": strength})
 
-        elif "ksampler" in low or "sampler" in low and "custom" in low:
+        elif "samplercustom" in low:
+            noise_ref = inp.get("noise")
+            if isinstance(noise_ref, (list, tuple)) and noise_ref:
+                n_node = nodes.get(str(noise_ref[0]))
+                if n_node:
+                    n_in = n_node.get("inputs", {})
+                    s = n_in.get("noise_seed") or n_in.get("seed")
+                    if s is None:
+                        w = _widgets(n_node)
+                        if w and isinstance(w[0], (int, float)):
+                            s = w[0]
+                    if s is not None and isinstance(s, (int, float)):
+                        seeds.append(int(s))
+            sigmas_ref = inp.get("sigmas")
+            if isinstance(sigmas_ref, (list, tuple)) and sigmas_ref:
+                s_node = nodes.get(str(sigmas_ref[0]))
+                if s_node:
+                    s_in = s_node.get("inputs", {})
+                    st = s_in.get("steps")
+                    if st is None:
+                        w = _widgets(s_node)
+                        if len(w) >= 2 and isinstance(w[1], (int, float)):
+                            st = w[1]
+                    if st is not None and isinstance(st, (int, float)):
+                        steps_list.append(int(st))
+                    sch = s_in.get("scheduler")
+                    if sch and isinstance(sch, str):
+                        sampler_bits.append(sch)
+            samp_ref = inp.get("sampler")
+            if isinstance(samp_ref, (list, tuple)) and samp_ref:
+                sm_node = nodes.get(str(samp_ref[0]))
+                if sm_node:
+                    sm_in = sm_node.get("inputs", {})
+                    sn = sm_in.get("sampler_name") or sm_in.get("sampler")
+                    if sn and isinstance(sn, str):
+                        sampler_bits.insert(0, sn)
+
+        elif "ksampler" in low:
             steps = inp.get("steps")
             sampler = inp.get("sampler_name") or inp.get("sampler")
             scheduler = inp.get("scheduler")
@@ -229,43 +307,58 @@ def parse_comfyui_workflow(graph_json: str) -> dict:
             if not any([steps, sampler, scheduler, cfg, seed]):
                 w = _widgets(entry)
                 if w:
-                    if len(w) >= 1:
-                        seed = seed or (w[0] if isinstance(w[0], (int, float)) else None)
-                    if len(w) >= 3:
-                        steps = steps or (w[2] if isinstance(w[2], (int, float)) else None)
-                    if len(w) >= 4:
-                        cfg = cfg or (w[3] if isinstance(w[3], (int, float)) else None)
-                    if len(w) >= 5:
-                        sampler = sampler or (w[4] if isinstance(w[4], str) else None)
-                    if len(w) >= 6:
-                        scheduler = scheduler or (w[5] if isinstance(w[5], str) else None)
+                    if len(w) >= 1 and isinstance(w[0], (int, float)):
+                        seed = seed or w[0]
+                    if len(w) >= 3 and isinstance(w[2], (int, float)):
+                        steps = steps or w[2]
+                    if len(w) >= 4 and isinstance(w[3], (int, float)):
+                        cfg = cfg or w[3]
+                    if len(w) >= 5 and isinstance(w[4], str):
+                        sampler = sampler or w[4]
+                    if len(w) >= 6 and isinstance(w[5], str):
+                        scheduler = scheduler or w[5]
+            if seed is not None and isinstance(seed, (int, float)):
+                seeds.append(int(seed))
+            if steps is not None and isinstance(steps, (int, float)):
+                steps_list.append(int(steps))
             bits = []
-            # Any of these can be a link rather than a literal; a raw
-            # ["147", 0] in the summary is noise the LLM would have to ignore.
-            if isinstance(sampler, (list, tuple)):
-                sampler = _resolve_text(sampler)
-            if isinstance(scheduler, (list, tuple)):
-                scheduler = _resolve_text(scheduler)
-            if isinstance(steps, (list, tuple)) or isinstance(cfg, (list, tuple)):
-                steps = None if isinstance(steps, (list, tuple)) else steps
-                cfg = None if isinstance(cfg, (list, tuple)) else cfg
-            if isinstance(seed, (list, tuple)):
-                seed = None
             if sampler:
                 bits.append(str(sampler))
             if scheduler:
                 bits.append(str(scheduler))
-            if steps is not None:
-                bits.append(f"{int(steps)} steps")
             if cfg is not None:
                 try:
                     bits.append(f"cfg {round(float(cfg), 2)}")
                 except Exception:
                     pass
-            if seed is not None:
-                bits.append(f"seed {seed}")
             if bits:
                 sampler_bits.append(" / ".join(bits))
+
+        elif "randomnoise" in low:
+            s = inp.get("noise_seed") or inp.get("seed")
+            if s is None:
+                w = _widgets(entry)
+                if w and isinstance(w[0], (int, float)):
+                    s = w[0]
+            if s is not None and isinstance(s, (int, float)):
+                seeds.append(int(s))
+
+        elif "basicscheduler" in low or ("scheduler" in low and "steps" in inp):
+            st = inp.get("steps")
+            if st is None:
+                w = _widgets(entry)
+                if len(w) >= 2 and isinstance(w[1], (int, float)):
+                    st = w[1]
+            if st is not None and isinstance(st, (int, float)):
+                steps_list.append(int(st))
+            sch = inp.get("scheduler")
+            if sch and isinstance(sch, str):
+                sampler_bits.append(sch)
+
+        elif "seedvr" in low:
+            s = inp.get("seed")
+            if s is not None and isinstance(s, (int, float)):
+                seeds.append(int(s))
 
     def _uniq(seq):
         seen: set = set()
@@ -277,13 +370,30 @@ def parse_comfyui_workflow(graph_json: str) -> dict:
                 out.append(x)
         return out
 
+    chosen_seed = seeds[0] if seeds else None
+    chosen_steps = steps_list[0] if steps_list else None
+
+    summary_parts = []
+    if sampler_bits:
+        summary_parts.append(" / ".join(_uniq(sampler_bits)))
+    if chosen_steps is not None:
+        summary_parts.append(f"{chosen_steps} steps")
+    if chosen_seed is not None:
+        summary_parts.append(f"seed {chosen_seed}")
+
+    user_p = allma_user_prompt or ("\n\n".join(_uniq(positive)) if positive else "")
+
     return {
         "source": "ComfyUI",
         "model": ", ".join(_uniq(model_names)),
+        "user_prompt": user_p,
         "positive_prompt": "\n\n".join(_uniq(positive)),
         "negative_prompt": "\n\n".join(_uniq(negative)),
+        "enhancer_used": allma_enhancer,
         "loras": _uniq(loras),
-        "sampler_summary": " | ".join(_uniq(sampler_bits)),
+        "seed": chosen_seed,
+        "steps": chosen_steps,
+        "sampler_summary": " | ".join(summary_parts) if summary_parts else " | ".join(_uniq(sampler_bits)),
         "raw_class_types": sorted(set(class_types)),
     }
 
@@ -403,6 +513,57 @@ def read_image_metadata(path: str) -> dict:
         if not best and chunks:
             joined = "\n".join(f"{k}: {v[:400]}" for k, v in chunks.items() if v)
             best = {"source": "PNG (unrecognized)", "raw": joined}
+
+        # The prompt Allma Generate stamped on its way past, which is NOT in the
+        # two blobs above: those are serialised at submit time, before the run,
+        # so the graph's copy of the prompt is whatever the widget held then —
+        # stale, or empty. This chunk is the text the model was actually given.
+        # Read last and unconditionally, so it survives every branch above,
+        # including the "unrecognized PNG" fallback.
+        raw_user = chunks.get("allma_user_prompt")
+        if raw_user:
+            try:
+                raw_user = json.loads(raw_user)
+            except Exception:
+                pass
+            if isinstance(raw_user, str) and raw_user.strip():
+                best = dict(best)
+                best["user_prompt"] = raw_user.strip()
+
+        raw_enhancer = chunks.get("allma_enhancer")
+        if raw_enhancer is not None:
+            try:
+                raw_enhancer = json.loads(raw_enhancer)
+            except Exception:
+                pass
+            best = dict(best)
+            if isinstance(raw_enhancer, str):
+                best["enhancer_used"] = raw_enhancer.lower() in ("true", "1", "yes")
+            elif isinstance(raw_enhancer, bool):
+                best["enhancer_used"] = raw_enhancer
+
+        raw = chunks.get("allma_prompt")
+        if raw:
+            try:
+                raw = json.loads(raw)   # stored through json.dumps by SaveImage
+            except Exception:
+                pass
+            if isinstance(raw, str) and raw.strip():
+                best = dict(best)
+                best.setdefault("source", "ComfyUI")
+                raw_stripped = raw.strip()
+                best["allma_prompt"] = raw_stripped
+                user_p = (best.get("user_prompt") or "").strip()
+                if best.get("enhancer_used") is True:
+                    best["final_prompt"] = raw_stripped
+                elif best.get("enhancer_used") is None:
+                    if not user_p or user_p != raw_stripped:
+                        best["enhancer_used"] = True
+                        best["final_prompt"] = raw_stripped
+                    else:
+                        best["enhancer_used"] = False
+                elif best.get("enhancer_used") is False and not user_p:
+                    best["user_prompt"] = raw_stripped
         return best
     if head.startswith(JPEG_MAGIC):
         return _read_jpeg_exif(str(p))
@@ -418,16 +579,32 @@ def format_metadata_for_llm(meta: dict, label: str = "Image metadata") -> str:
         lines.append(f"  source: {meta['source']}")
     if meta.get("model"):
         lines.append(f"  model: {meta['model']}")
-    if meta.get("positive_prompt"):
-        text = meta["positive_prompt"].strip()
-        if len(text) > 1200:
-            text = text[:1200] + "…"
-        lines.append(f"  positive prompt: \"{text}\"")
+
+    # 1. User prompt
+    user_prompt = (meta.get("user_prompt") or meta.get("positive_prompt") or "").strip()
+    if user_prompt:
+        lines.append(f"  user prompt: \"{user_prompt}\"")
+
     if meta.get("negative_prompt"):
         text = meta["negative_prompt"].strip()
-        if len(text) > 400:
-            text = text[:400] + "…"
         lines.append(f"  negative prompt: \"{text}\"")
+
+    # 2. Caso tenha sido usado enhancer, o prompt final inteiro
+    enhancer_used = meta.get("enhancer_used")
+    final_prompt = (meta.get("final_prompt") or meta.get("allma_prompt") or "").strip()
+    if enhancer_used is True and final_prompt and final_prompt != user_prompt:
+        lines.append("  enhancer: used")
+        lines.append(f"  final prompt: \"{final_prompt}\"")
+    elif enhancer_used is False:
+        lines.append("  enhancer: disabled")
+    elif final_prompt and final_prompt != user_prompt:
+        lines.append(f"  final prompt: \"{final_prompt}\"")
+
+    # 3. Seed do sampling
+    if meta.get("seed") is not None:
+        lines.append(f"  seed: {meta['seed']}")
+
+    # 4. LoRAs com seus strengths
     loras = meta.get("loras") or []
     if loras:
         bits = []
@@ -439,8 +616,13 @@ def format_metadata_for_llm(meta: dict, label: str = "Image metadata") -> str:
             else:
                 bits.append(str(l))
         lines.append(f"  LoRAs: {', '.join(bits)}")
+
+    # 5. Steps
+    if meta.get("steps") is not None:
+        lines.append(f"  steps: {meta['steps']}")
+
     if meta.get("sampler_summary"):
         lines.append(f"  sampler: {meta['sampler_summary']}")
     if meta.get("raw"):
-        lines.append(f"  raw:\n    {meta['raw'][:400]}")
+        lines.append(f"  raw:\n    {meta['raw']}")
     return "\n".join(lines)

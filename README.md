@@ -215,10 +215,10 @@ toggle appears for it, and switching that toggle off mutes the node it points at
 Up to ten branches on one node. `Toggle All` sets them all at once; each can
 still be changed on its own afterwards.
 
-**Nothing passes through.** There are no outputs: the real wire still runs
-straight from the source to whatever consumes it, and this node only *points at*
-the branch. That also means it never executes — with nothing downstream it is
-pruned before the graph runs, which is right for a control surface.
+**Nothing passes through.** The real wire still runs straight from the source to
+whatever consumes it, and this node only *points at* the branch. With none of
+its outputs wired it never executes — it is pruned before the graph runs, which
+is right for a control surface.
 
 **Why muting rather than a value.** Bypassing or muting by hand changes the
 *graph*, and the graph is frozen the moment you queue; a boolean changes a
@@ -235,6 +235,74 @@ cannot be known in time, and the last clicked state is used instead.
 
 > Nodes you muted by hand are never woken up again by the muter. Only the ones it
 > put to sleep come back.
+
+**`solo` — only this one.** The dropdown lists the branches that have a wire.
+Pick a number and that branch goes on while every other goes off, which is the
+thing you do constantly when comparing alternatives and which otherwise costs
+one click per branch. Flip any toggle by hand afterwards and the dropdown falls
+back to `none`, because the promise it makes — exactly one branch live — stopped
+being true. It is a widget like any other, so it serializes with the workflow
+and survives a reload.
+
+**Switches for unwired branches are hidden with a flag, never removed.** Taking
+a widget out of `node.widgets` makes ComfyUI prune the matching INPUT — and its
+prune loop walks forward while splicing, so it eats every other one: a bypasser
+with 25 toggles came back as `on_1, on_3, on_5 …`. Any promotion attached to a
+casualty died with it, and every promoted widget on the parent slid one place
+(the famous `model = 2`). Measured A/B on a damaged file: with removal, loading
+gave 13 toggles; with `hidden = true`, 25 — and ComfyUI even puts back the ones
+already lost. The node still collapses to the wired branches (726px → 94px in
+the test); only the mechanism changed.
+
+**`toggleRestriction` — how many branches may be on at once.** In the
+Properties panel (right-click → Properties), the same control rgthree's Fast
+Groups Muter has:
+
+| valor | o que faz |
+|---|---|
+| `default` | nada é imposto, as chaves são livres |
+| `max one` | ligar uma desliga todas as outras; desligar a última é permitido |
+| `always one` | idem, e a última ligada se recusa a desligar |
+
+Choosing a restriction while several branches are on keeps the first live one
+and drops the rest; `Toggle All` under a restriction lands on the first branch
+instead of turning everything on. It lives in `properties`, not in the widget
+row, so adding it cannot shift `widgets_values` on workflows already saved —
+the accident that broke every older muter when `solo` was inserted between the
+master and the switches.
+
+**The `fallback` output.** Leave it unwired and nothing changes: the node has no
+consumer, so it is pruned before the graph runs and stays a pure control
+surface. Wire it and the same switches become a fallback chain — branch 1 if it
+is on, else branch 2, else branch 3 — so three ways of making the same image can
+sit side by side with nothing to rewire. The slots are lazy and asked for one at
+a time, so a branch that is switched off, or that comes after the one that
+answered, never runs. Measured on three four-second branches: 4s, not 12s.
+[Allma Fallback](#allma-fallback) does the same on its own, for when the choice
+has nothing to do with muting.
+
+**One BOOLEAN output per switch.** Each switch has an output carrying its state
+(`True` = on), named like the switch — rename the switch and the output follows.
+On the canvas it sits on the switch's own row, at the right edge; in Nodes 2.0
+the outputs are listed on the right. Only the wired branches get one (plus any
+output that already has a wire), and `fallback` stays output 0, so workflows
+wired before keep their links. Wiring only these booleans never makes a branch
+run: the node answers them without asking for any branch value.
+
+**Show / Hide.** Right-click → **Show / Hide** (also in the Properties panel)
+hides `Toggle All`, `Solo`, the branch switches or the switch outputs. Hidden
+switches keep working — `Toggle All` alone can drive them — and their outputs
+go with them, except one that is already wired. The node takes exactly the
+height its rows need, when created and when an option changes, and keeps the
+size it was saved with on reload.
+
+**`solo` shows the names.** The dropdown lists each branch by its switch's name
+(`Turbo LoRa`, `LoRa 1`…); the value underneath stays the number, which is what
+the backend validates.
+
+**Wireless button in Nodes 2.0.** The title-bar wifi button is drawn on the
+canvas; Nodes 2.0 draws the title in HTML, so there the same button is placed in
+the node's header.
 
 ---
 
@@ -357,6 +425,180 @@ Backends that ignore `chat_template_kwargs` will keep reasoning regardless of
 the toggle. The quick way to tell: run the same prompt with thinking ON and OFF
 — identical output means the field was dropped, and the reasoning has to be
 controlled from the system prompt or the server's own flags instead.
+
+## Only what the branch is wired to
+
+A branch switches off the node it points at. Nothing upstream of it, ever.
+
+It used to sweep the target's private ancestors as well, to save the work of a
+loader feeding a muted node. Two things killed that. Switch every branch off and
+the sweep has nothing live left to stop it, so it walks up and paints the whole
+graph — sampler, scheduler, upscaler and all, which is what a full bypass looked
+like on screen. And the saving was imaginary: ComfyUI runs only what reaches an
+output, so a node a mute orphans never executes anyway.
+
+The whole node is still decided before anything is applied, because the same
+node can be wired to two branches and a chain is the normal wiring here (six
+Load LoRA in series, each feeding the next and its own branch). Off wins over
+on; applying branch by branch let a later ON branch switch an earlier OFF
+branch's target back on, so the switch read "bypassed" while the node kept
+running.
+
+## Allma Fallback
+
+Many inputs in, the first one that actually arrived out — slot 1, else slot 2,
+else slot 3. Slots grow as you fill them, like Allma Bus In, and anything plugs
+into anything.
+
+What it pairs with is the point: a branch switched off by Allma Muter is removed
+from the prompt, so its wire never arrives and the switch falls through. Three
+ways of producing the same image can sit side by side and whichever is left
+running comes out, with nothing to rewire.
+
+Only `None` is skipped. An empty string, a zero and an all-black image are
+values someone chose to send, and the value is never tested for truthiness — a
+tensor has none. With every slot empty it raises instead of passing nothing on.
+
+The slots are **lazy**, asked for one at a time: an alternative that is never
+chosen is never produced. Wire three upscalers into it and only the one that
+comes out ever runs. (ComfyUI needed a small patch for that to be true of any
+node with growing slots — see [Lazy on a slot that
+grew](#lazy-on-a-slot-that-grew).)
+
+## Slot order: ComfyUI shuffles it, and how to put it back
+
+Grown slots are appended after the declared ones, so a family gets cut in half:
+a bus comes back as IMAGE 1, IMAGE 4 … IMAGE 9, bus, Width, Height, slot_13,
+slot_14, and only then IMAGE 2 and IMAGE 3. `MiniMaxH3ReferenceToVideo` does it
+too — after a refresh its ref_image_3..8 sit below ref_video_0 and ref_audio_0.
+Nothing about the node causes it.
+
+`tidyDynamicSlots(node)` in `web/allma_slotfix.js` puts a node's slots back in
+order — families in the order they first appear, numbers ascending inside each.
+It runs automatically on workflow load (if enabled in settings), and can be
+run manually on any node: right-click and pick "Fix slot order (Allma)".
+It works on third-party nodes too. (It never touches Bus nodes or connection
+changes, preserving custom bus labels and avoiding racing Autogrow compaction).
+
+Two rules it was rewritten to obey, both learned by breaking a real workflow:
+
+- **A wire belongs to the INDEX, not to the slot object.** `input.link` is
+  derived (`linkIdOf(this)`, and its setter only accepts null), so moving slot
+  objects renames positions while the wires stay where they were.
+- **Move a wire only with `connect()`.** Writing `target_slot` by hand is
+  refused by this frontend — "Failed to update link endpoints" in the console,
+  and two wires gone from an AllmaGenerate. The tidy now disconnects and
+  reconnects each wire to its slot by name, then verifies every one of them
+  against a snapshot and reports the node if anything did not come back.
+
+The old automatic pass that sorted by name is gone for good: Autogrow renames
+slots when it compacts, so sorting raced it and dropped wires onto slots that
+had just been renamed.
+
+## Muter and Bypasser reach through the bus
+
+A muter wired to Allma Bus Out is pointing at a junction: switching it off there
+would take out every slot travelling on that bus, not the one branch the switch
+names. So it does not stop at the bus — it steps across to the node that fills
+that slot on Allma Bus In and switches off THAT one, leaving the bus and every
+other slot alone.
+
+Bus Out's output *k* is Bus In's slot *k+1*, which is how the mirrored names are
+built, so the hop is exact. Buses that feed buses are followed to the far end. A
+branch pointing at an empty slot switches off nothing at all — there is nothing
+behind it, and muting the bus in its place is precisely the accident this avoids.
+
+## Slots that grow, and the wires that slide off them
+
+A link is stored by INDEX — "target_slot 27" — and that only survives a reload
+if the input array is rebuilt exactly as it was saved. On a node whose inputs
+grow it is not: the schema lays out `value_1`, then `on_1..on_25`, and Autogrow
+appends `value_2`, `value_3` … after the toggles. Loading a workflow whose muter
+sits in a subgraph drops one link and slides the rest up a slot, so every toggle
+drives its neighbour. It is not particular to this pack — `MiniMaxH3ReferenceToVideo`
+loses its `ref_image` wires the same way when it is grouped into a subgraph.
+
+`web/allma_slotfix.js` repairs this for the whole workflow. Before the graph is
+built it reads, from the file, the NAME of the slot each link was saved on; once
+everything is up it compares that with where the wires landed and puts back the
+ones that moved, using the ordinary connect API, then removes the duplicate the
+load invented. It is registered once and walks every node of every type, so
+**a node added to this pack later is covered without being listed anywhere**,
+and so is a node from another pack.
+
+Two things it learned the hard way, both from real files:
+
+- **The plan comes from each node's own `inputs` array, never from the links
+  array's `target_slot`.** The H3 Fun ControlNet examples ship hand-built, with
+  every link written as `target_slot: 0`; loading them by index piles four wires
+  onto slot 0 and drops the rest — 24 links in the file, 11 on the canvas. The
+  `inputs` array is the one place every kind of file agrees.
+- **The root graph is keyed by the word "root", not by its id.** A saved
+  workflow carries `00000000-0000-0000-0000-000000000000` for the root and is
+  given a fresh uuid on load, so keying by id worked inside subgraphs and
+  silently skipped every node in the main graph.
+
+It is conservative by design: a slot the file names but that no longer exists is
+left alone (renamed inputs stay the loader's business), a node whose wiring
+already matches is never touched, and only a node that actually had a wire moved
+gets its strays cleaned.
+
+### The same damage with no file involved
+
+Grouping nodes into a subgraph breaks the wires the same way, and there the plan
+above is empty — nothing is being loaded. Watched live: three sources wired into
+a bypasser's `value_1..value_3`, then "Convert to Subgraph", and inside the new
+subgraph the wires sit on `value_1`, `enabled` and `solo`. The links kept
+`target_slot` 0,1,2 while the rebuilt node put its grown slots at the end.
+
+The rebuild goes through `node.configure`, and what configure is handed is still
+correct: it names every slot and the link id on it. So the same idea runs one
+step earlier — remember what configure was told, and 150 ms later, once the
+links exist, check where each one landed and move the ones that are wrong. It
+hooks `LGraphNode.prototype`, so grouping, ungrouping, pasting and undo are all
+covered, for every node type, ours or anyone's. While a workflow is loading it
+stands down: the file's own plan is better, and `afterConfigureGraph` already
+uses it.
+
+Only wires whose link id was recorded are ever removed, and only from a slot the
+record disagrees with — anything wired *after* configure (a subgraph's input
+proxy, say) is none of its business.
+
+Two rules for anything written here from now on:
+
+- **Address a slot by name, never by index.** `node.inputs[3]` is not a promise;
+  `node.inputs.find(i => i.name === "values.value_3")` is. The same goes for
+  pairing widgets with slots — match `on_3` to `values.value_3` by their number,
+  not by their position in the array.
+- **Need to react to a repair?** `onRepair(fn)` from `allma_slotfix.js` fires
+  after the sweep, and `repairNode(node)` fixes a single node on demand. The
+  muter uses both to re-apply its mutes once the branches are back in place.
+
+## Lazy on a slot that grew
+
+ComfyUI reads an input's flags in two places, and only one of them knows about
+dynamic inputs. `execution.get_input_data` expands the schema against the node's
+actual inputs first, so `values.value_3` is found with all its flags. But
+`TopologicalSort.get_input_info` — the one the **scheduler** uses to decide what
+has to run — calls `INPUT_TYPES()` raw, which in a V3 node returns the template
+rather than the grown slots. There is no `values.value_3` in it, `lazy` reads as
+false, and every wired branch is scheduled as a hard dependency.
+
+The effect is quiet: `check_lazy_status` is still called and still answers, but
+by then everything it might have skipped has already run. Three four-second
+branches with one switched off took 12.3 s where laziness gives 4.
+
+`api/lazy_dynamic.py` wraps that one method to expand the schema the same way
+the executor does, for V3 nodes only, cached per execution. Static inputs are
+untouched — they were always found by name — and a node that does not ask for
+`lazy` keeps running eagerly (Allma Bus still evaluates all its slots, as it
+should). If the patch cannot be installed it prints and gives up: the slots go
+back to being eager, which is how ComfyUI behaves without it.
+
+One detail worth knowing if you write a `check_lazy_status` for a dynamic
+input: there, and only there, each slot arrives as `(value, key)` — ComfyUI sets
+`create_dynamic_tuple` so the slot can tell you the flat name the executor knows
+it by, `values.value_3`. Hand that name back instead of composing it yourself.
 
 ## Install
 

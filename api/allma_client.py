@@ -64,6 +64,65 @@ def image_tensor_to_data_url(tensor) -> str:
     return "data:image/png;base64," + base64.b64encode(buf.getvalue()).decode()
 
 
+def frames_to_video_data_url(frames, fps: float = 24.0, send_fps: float = 8.0,
+                             max_edge: int = 1280) -> str:
+    """ComfyUI IMAGE batch (N, H, W, C) in [0,1] → data:video/mp4;base64,...
+
+    A ComfyUI video is just a stack of frames with no rate attached, so `fps` is
+    an assumption: 24, which is MiniMax H3's native rate and what the H3
+    workflows run at. It only has to be right for the model's sense of timing.
+
+    Frames are thinned to `send_fps` before encoding, with the output rate set
+    to match, so the clip keeps its real duration. vLLM's Qwen3-VL processor
+    samples video at 2 fps regardless — measured: a 15 s clip came back as
+    exactly one reading per second — so 8 fps is still 4× what it will look at,
+    and the payload drops to about a third of the full-rate one (a 15 s 720p
+    clip was 13.6 MB of base64 at 24 fps).
+
+    H.264 in yuv420p needs even dimensions; scale=-2 keeps the aspect ratio and
+    rounds for us.
+    """
+    import os
+    import subprocess
+    import tempfile
+
+    import numpy as np
+
+    if frames is None:
+        return ""
+    arr = frames.detach().cpu().numpy() if hasattr(frames, "detach") else np.asarray(frames)
+    if arr.ndim == 3:
+        arr = arr[None]
+    if arr.ndim != 4 or arr.shape[0] == 0:
+        return ""
+
+    step = max(1, int(round(fps / send_fps))) if send_fps and fps > send_fps else 1
+    arr = arr[::step]
+    out_fps = fps / step
+    n, h, w, _c = arr.shape
+    rgb = (arr[..., :3].clip(0.0, 1.0) * 255.0).round().astype("uint8")
+
+    scale = f"scale='if(gte(iw,ih),min({max_edge},iw),-2)':'if(gte(iw,ih),-2,min({max_edge},ih))'"
+    fd, path = tempfile.mkstemp(suffix=".mp4")
+    os.close(fd)
+    try:
+        cmd = ["ffmpeg", "-y", "-loglevel", "error",
+               "-f", "rawvideo", "-pix_fmt", "rgb24", "-s", f"{w}x{h}",
+               "-r", f"{out_fps:.6f}", "-i", "-",
+               "-vf", scale, "-c:v", "libx264", "-pix_fmt", "yuv420p",
+               "-crf", "23", "-preset", "veryfast", "-movflags", "+faststart", path]
+        r = subprocess.run(cmd, input=rgb.tobytes(), capture_output=True)
+        if r.returncode != 0:
+            raise RuntimeError(f"ffmpeg failed: {r.stderr.decode(errors='replace')[:300]}")
+        data = open(path, "rb").read()
+    finally:
+        try:
+            os.remove(path)
+        except OSError:
+            pass
+    return "data:video/mp4;base64," + base64.b64encode(data).decode()
+
+
 def audio_dict_to_wav_b64(audio: dict) -> tuple[str, str]:
     """ComfyUI AUDIO ({"waveform": tensor, "sample_rate": int}) → (base64_data, "wav").
 
@@ -102,6 +161,7 @@ def build_user_content(
     image_data_urls: list[str],
     audio_b64: str,
     audio_format: str,
+    video_data_url: str = "",
 ) -> list[dict] | str:
     """Assemble OpenAI-style multimodal content array. Returns a plain string when
     there are no attachments (some backends prefer the simpler form).
@@ -123,6 +183,12 @@ def build_user_content(
         if url:
             parts.append({"type": "text", "text": f"Image {idx}:"})
             parts.append({"type": "image_url", "image_url": {"url": url}})
+    # One video, labelled the same way the images are so "Video 1" in a Ref2VA
+    # prompt points at the clip the model actually watched. vLLM takes it as a
+    # video_url part; the profile caps it at one per prompt.
+    if video_data_url:
+        parts.append({"type": "text", "text": "Video 1:"})
+        parts.append({"type": "video_url", "video_url": {"url": video_data_url}})
     if audio_b64:
         parts.append(
             {"type": "input_audio", "input_audio": {"data": audio_b64, "format": audio_format}}

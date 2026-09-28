@@ -18,6 +18,7 @@ from ..api.allma_client import (
     build_user_content,
     chat_completion,
     image_tensor_to_data_url,
+    frames_to_video_data_url,
 )
 from ..api.interrupt import begin_run
 from ..api.stream import Relay
@@ -211,6 +212,11 @@ def _metadata_for_slot(prompt: dict, my_id: str, slot: str) -> str:
 
 IMAGE_SLOTS = [f"image_{i}" for i in range(1, MAX_IMAGES + 1)]
 AUDIO_SLOTS = [f"audio_{i}" for i in range(1, MAX_AUDIOS + 1)]
+# Three slots to mirror MiniMax H3's own ref_video_0..2, but only the first
+# filled one is sent: the vLLM profile allows one video per prompt. A slot fed
+# by a muted branch arrives empty, so "first filled" is "first switched on".
+MAX_VIDEOS = 3
+VIDEO_SLOTS = [f"video_{i}" for i in range(1, MAX_VIDEOS + 1)]
 
 
 class AllmaGenerate(io.ComfyNode):
@@ -287,8 +293,25 @@ class AllmaGenerate(io.ComfyNode):
                     "the workflow's length. Stated in the system prompt so the model "
                     "scripts the action to fit the real clip instead of guessing.",
                 ),
+                # Last on purpose. Links address inputs by index, so a new input
+                # anywhere above would shift duration's slot in every saved
+                # workflow and send those wires into the wrong socket.
+                io.Autogrow.Input(
+                    "videos", optional=True,
+                    template=io.Autogrow.TemplateNames(
+                        input=io.Image.Input(
+                            "video",
+                            tooltip="Reference video as frames — the same IMAGE batch "
+                            "you feed MiniMax H3's ref_videos. Sent so the model can "
+                            "actually watch the motion it is asked to describe. Only "
+                            "the first filled slot is sent (one video per prompt); "
+                            "assumed 24 fps.",
+                        ),
+                        names=VIDEO_SLOTS, min=0,
+                    ),
+                ),
             ],
-            hidden=[io.Hidden.prompt, io.Hidden.unique_id],
+            hidden=[io.Hidden.prompt, io.Hidden.unique_id, io.Hidden.extra_pnginfo],
             outputs=[
                 io.String.Output(display_name="output_prompt"),
                 io.String.Output(display_name="thinking"),
@@ -296,6 +319,41 @@ class AllmaGenerate(io.ComfyNode):
                 io.String.Output(display_name="status"),
             ],
         )
+
+    @classmethod
+    def _stamp(cls, text, user_prompt=None, enhancer=True):
+        """Write the generated prompt into the metadata of whatever is saved.
+
+        ComfyUI seals two blobs into a saved file — the API prompt and the
+        contents of extra_pnginfo — and it seals them at SUBMIT time, before a
+        single node has run. A string this node produces mid-run therefore
+        cannot reach them by any amount of rewiring: what a text widget carries
+        into the file is the value it held before the job started, which is the
+        stale one or none at all.
+
+        What can reach them is the dict itself. extra_pnginfo is handed to every
+        node that asks for it as the SAME object, for the whole execution
+        (execution.py:217), so a key added here is written out by any save node
+        that runs later — SaveImage through add_text, VHS_VideoCombine into both
+        the preview PNG and the video container.
+
+        Running "later" is free in this case rather than something to arrange:
+        the prompt written here feeds the conditioning, which feeds sampling,
+        decode and finally the save, so this node is already an ancestor of
+        every save in the graph. No extra node, no rewiring, and it applies to
+        every workflow that uses Allma Generate at all.
+
+        A missing dict means --disable-metadata, or a caller that never made
+        one. Nothing to stamp and nothing worth failing a whole generation over.
+        """
+        info = getattr(cls.hidden, "extra_pnginfo", None)
+        if isinstance(info, dict):
+            # Never 'prompt' or 'workflow': those are ComfyUI's own, and
+            # clobbering 'workflow' costs the file its drag-back-onto-canvas.
+            info["allma_prompt"] = text or ""
+            if user_prompt is not None:
+                info["allma_user_prompt"] = user_prompt or ""
+            info["allma_enhancer"] = "true" if enhancer else "false"
 
     @classmethod
     def fingerprint_inputs(cls, **_kwargs):
@@ -315,6 +373,7 @@ class AllmaGenerate(io.ComfyNode):
         images=None,
         audios=None,
         duration=None,
+        videos=None,
     ) -> io.NodeOutput:
         # 'output_prompt' must always carry a usable prompt, never a diagnostic:
         # whenever the LLM produces nothing we fall back to this and report the
@@ -325,6 +384,7 @@ class AllmaGenerate(io.ComfyNode):
         # touch connectivity at all, so the graph keeps running with Allma down.
         if not enabled:
             print(f"{LOG} disabled — passing user_prompt through ({len(passthrough)} chars)")
+            cls._stamp(passthrough, user_prompt=passthrough, enhancer=False)
             return io.NodeOutput(passthrough, "", system_prompt or "", "")
 
         if not isinstance(connectivity, dict):
@@ -343,6 +403,7 @@ class AllmaGenerate(io.ComfyNode):
                 "restart ComfyUI (or refresh the browser) to repopulate the list."
             )
             print(f"{LOG} ⚠ {status} — passing user_prompt through")
+            cls._stamp(passthrough, user_prompt=passthrough, enhancer=False)
             return io.NodeOutput(passthrough, "", system_prompt or "", status)
 
         # The `preset` widget is JS-only: selecting a preset in the dropdown
@@ -425,6 +486,20 @@ class AllmaGenerate(io.ComfyNode):
         elif raw_images and any(i is not None for i in raw_images):
             print(f"{LOG} ⚠ images were wired but none encoded")
 
+        video_url = ""
+        for slot, frames in zip(VIDEO_SLOTS, _ordered(videos, VIDEO_SLOTS)):
+            if frames is None:
+                continue
+            if video_url:
+                print(f"{LOG} ignoring {slot}: the backend takes one video per prompt")
+                continue
+            try:
+                video_url = frames_to_video_data_url(frames)
+                n = frames.shape[0] if hasattr(frames, "shape") else "?"
+                print(f"{LOG} sending {slot}: {n} frames, {len(video_url) // 1024}KB")
+            except Exception as e:
+                print(f"{LOG} failed to encode {slot}: {e}")
+
         audio_b64, audio_fmt = "", ""
         for slot, audio in zip(AUDIO_SLOTS, _ordered(audios, AUDIO_SLOTS)):
             if audio is None:
@@ -439,7 +514,8 @@ class AllmaGenerate(io.ComfyNode):
             except Exception as e:
                 print(f"{LOG} failed to encode {slot}: {e}")
 
-        content = build_user_content(user_prompt or "", image_urls, audio_b64, audio_fmt)
+        content = build_user_content(user_prompt or "", image_urls, audio_b64, audio_fmt,
+                                     video_data_url=video_url)
         if content == "" and not effective_system:
             raise RuntimeError("Nothing to send — both prompts are empty and no inputs attached.")
 
@@ -493,6 +569,7 @@ class AllmaGenerate(io.ComfyNode):
                 status = f"{status} Falling back to the raw user_prompt."
             print(f"{LOG} empty response — passing user_prompt through ({len(response)} chars)")
 
+        cls._stamp(response, user_prompt=passthrough, enhancer=True if response != passthrough else False)
         return io.NodeOutput(
             response, thought if thinking else "", effective_system, status
         )

@@ -41,7 +41,13 @@ export function* allNodes(graph, seen = new Set()) {
   seen.add(graph);
   for (const n of graph._nodes || []) {
     yield n;
-    const sub = subgraphOf(n);
+    // The Super-Subgraph node keeps its inner graph as a private LGraph on
+    // `__ssGraph` and deliberately clears `node.subgraph`, so without this the
+    // walk stopped at its border: a muter/bypasser inside one never got polled,
+    // and a boolean wired into its switches changed nothing. Only the walk goes
+    // in — subgraphOf stays as is, since following a wire through an SS node's
+    // outputs works differently from a native subgraph.
+    const sub = subgraphOf(n) || n.__ssGraph || null;
     if (sub) yield* allNodes(sub, seen);
   }
 }
@@ -196,7 +202,7 @@ export function literalFrom(node, inputName, depth = 0) {
       const slot = (up.node.inputs || [])[link.origin_slot];
       if (!slot) return undefined;
       if (slot.link == null) {
-        const w = (up.node.widgets || []).find((x) => x.name === slot.name);
+        const w = (up.node.widgets || []).find((x) => x.name === slot.name || x.name === slot.widget?.name || (slot.label && (x.label === slot.label || x.name === slot.label)));
         return w ? w.value : undefined;
       }
       graph = up.graph;
@@ -254,7 +260,7 @@ export function promotedWidget(node, inputName) {
     if (!slot) return null;
     if (slot.link == null) {
       // End of the chain: the parent holds the widget being drawn.
-      return (up.node.widgets || []).find((w) => w.name === slot.name) || null;
+      return (up.node.widgets || []).find((w) => w.name === slot.name || w.name === slot.widget?.name || (slot.label && (w.label === slot.label || w.name === slot.label))) || null;
     }
     graph = up.graph;
     link = getLink(graph, slot.link);
