@@ -507,33 +507,11 @@ function drawWirelessBadge(node, ctx) {
   const btnX = node.size[0] - btnW - 6;
   const btnY = -titleH + (titleH - btnH) / 2;
 
+  // Just the glyph: white when wireless is on, faded when off (the click area
+  // is still the whole btnW × btnH box).
   ctx.save();
-  ctx.beginPath();
-  const radius = 4;
-  if (typeof ctx.roundRect === "function") {
-    ctx.roundRect(btnX, btnY, btnW, btnH, radius);
-  } else {
-    ctx.rect(btnX, btnY, btnW, btnH);
-  }
-
-  if (isWireless) {
-    ctx.fillStyle = "#0284c7";
-    ctx.fill();
-    ctx.strokeStyle = "#38bdf8";
-    ctx.lineWidth = 1;
-    ctx.stroke();
-
-    drawWifiGlyph(ctx, btnX + btnW / 2, btnY + btnH - 3.5, "#ffffff");
-  } else {
-    ctx.fillStyle = "rgba(255, 255, 255, 0.07)";
-    ctx.fill();
-    ctx.strokeStyle = "rgba(255, 255, 255, 0.15)";
-    ctx.lineWidth = 1;
-    ctx.stroke();
-
-    ctx.globalAlpha = 0.35;
-    drawWifiGlyph(ctx, btnX + btnW / 2, btnY + btnH - 3.5, "#ffffff");
-  }
+  ctx.globalAlpha = isWireless ? 1 : 0.28;
+  drawWifiGlyph(ctx, btnX + btnW / 2, btnY + btnH - 3.5, "#ffffff");
   ctx.restore();
 }
 
@@ -549,11 +527,11 @@ function ensureVueWirelessButton(node) {
   if (!document.getElementById("allma-wifi-style")) {
     const st = document.createElement("style");
     st.id = "allma-wifi-style";
-    st.textContent = `.allma-wifi-btn{flex:none;display:inline-flex;align-items:center;justify-content:center;width:26px;height:18px;margin-left:4px;padding:0;border-radius:4px;cursor:pointer;border:1px solid rgba(255,255,255,.15);background:rgba(255,255,255,.07)}
-.allma-wifi-btn svg{opacity:.35;pointer-events:none}
-.allma-wifi-btn:hover{border-color:#38bdf8}
-.allma-wifi-btn.on{background:#0284c7;border-color:#38bdf8}
-.allma-wifi-btn.on svg{opacity:1}`;
+    // Same look as the canvas: just the glyph, white when on, faded when off.
+    st.textContent = `.allma-wifi-btn{flex:none;display:inline-flex;align-items:center;justify-content:center;width:26px;height:18px;margin-left:4px;padding:0;border:0;background:transparent;cursor:pointer}
+.allma-wifi-btn svg{opacity:.28;pointer-events:none;transition:opacity .12s}
+.allma-wifi-btn:hover svg{opacity:.55}
+.allma-wifi-btn.on svg,.allma-wifi-btn.on:hover svg{opacity:1}`;
     document.head.append(st);
   }
   let btn = row.querySelector(":scope > .allma-wifi-btn");
